@@ -21,7 +21,7 @@
     news/explanations.json                      見出しの構造解説キャッシュ（claude CLI で生成）
     news/index.html                             閲覧用ページ（見出しの語を選択して単語帳に追加）
     news/vocab.html                             単語帳の暗記ページ
-    news/vocab.md                               単語帳（Markdown、手で編集しても可）
+    user/vocab.md                               単語帳（Markdown、手で編集しても可。個人データ・git 対象外）
     data/jlpt_vocab.json                        JLPT 語彙辞書（初回に自動ダウンロード）
 
 単語帳: 収集のたびに見出し中の N5・N4 単語を自動追加する。各単語には JLPT 等級を付ける。
@@ -34,6 +34,10 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from lesson import (LESSON_TEMPLATE, PROGRESS_NAME, USER_DIR, generate_today, lesson_view, load_progress,
+                    grammar_marks, load_syllabus, mark_done, migrate_user_data, next_review, parse_lesson_json,
+                    review_point, save_progress)
 
 # ==========================================================================
 # 1. 収集・精選
@@ -316,10 +320,9 @@ def _via_claude_cli(titles):
               + json.dumps(titles, ensure_ascii=False))
     r = subprocess.run(["claude", "-p", "--model", "haiku", prompt],
                        capture_output=True, text=True, timeout=300)
-    m = re.search(r"\[.*\]", r.stdout, re.S)
-    if r.returncode or not m:
+    if r.returncode:
         raise RuntimeError((r.stdout + r.stderr).strip()[:200])
-    out = json.loads(m.group(0))
+    out = parse_lesson_json(r.stdout, array=True)  # 未エスケープの " を直してから読む
     if len(out) != len(titles):
         raise RuntimeError("件数が一致しません")
     return dict(zip(titles, out))
@@ -345,6 +348,7 @@ def translate(titles, cache_path):
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     todo = [t for t in dict.fromkeys(titles) if t not in cache]
     if todo:
+        print(f"正在翻译 {len(todo)} 条标题…", file=sys.stderr, flush=True)
         for name, fn in (("claude CLI", _via_claude_cli), ("MyMemory", _via_mymemory)):
             if fn is _via_claude_cli and not _cli_ok:
                 continue
@@ -514,10 +518,9 @@ EXPLAIN_PROMPT = """你是日语老师，学生是只学完五十音的中国人
 
 def _claude_json(prompt, timeout=600):
     r = subprocess.run(["claude", "-p", "--model", "haiku", prompt], capture_output=True, text=True, timeout=timeout)
-    m = re.search(r"\[.*\]", r.stdout, re.S)
-    if r.returncode or not m:
+    if r.returncode:
         raise RuntimeError((r.stdout + r.stderr).strip()[:200])
-    return json.loads(m.group(0))
+    return parse_lesson_json(r.stdout, array=True)  # 未エスケープの " を直してから読む
 
 
 def explain_items(items, path, batch=8):
@@ -525,6 +528,8 @@ def explain_items(items, path, batch=8):
     global _cli_ok
     cache = json.loads(path.read_text()) if path.exists() else {}
     todo = [t for t in dict.fromkeys(x["title"] for x in items) if t not in cache]
+    if todo and _cli_ok:
+        print(f"正在生成句子讲解 {len(todo)} 条（claude CLI，每批 {batch} 条）…", file=sys.stderr, flush=True)
     for i in range(0, len(todo), batch):
         if not _cli_ok:
             break
@@ -534,7 +539,7 @@ def explain_items(items, path, batch=8):
             got = {t: e for t, e in zip(chunk, out) if isinstance(e, dict) and e.get("gist") and e.get("chunks")}
             cache.update(got)
             path.write_text(json.dumps(cache, ensure_ascii=False, indent=1))
-            print(f"句子讲解 {len(got)} 件（claude CLI）", file=sys.stderr)
+            print(f"句子讲解 {min(i + batch, len(todo))}/{len(todo)}（本批成功 {len(got)} 条）", file=sys.stderr, flush=True)
         except Exception as e:
             print(f"句子讲解の生成に失敗（claude CLI）: {e}", file=sys.stderr)
             _cli_ok = False
@@ -587,10 +592,17 @@ def load(news_dir):
 
 def build(news_dir):
     days = load(news_dir)
-    data = json.dumps({"days": days, "sections": PAGE_SECTIONS}, ensure_ascii=False).replace("</", "<\\/")
+    try:
+        marks = grammar_marks(load_syllabus(), load_progress(USER_DIR / PROGRESS_NAME), days)
+    except ValueError as e:  # 進度・大綱が壊れていてもページは作る
+        print(f"警告：无法标记学过的语法点：{e}", file=sys.stderr)
+        marks = {}
+    data = json.dumps({"days": days, "sections": PAGE_SECTIONS, "marks": marks},
+                      ensure_ascii=False).replace("</", "<\\/")
     out = news_dir / "index.html"
     out.write_text(TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS).replace("/*__DATA__*/null", data))
     (news_dir / "vocab.html").write_text(VOCAB_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
+    (news_dir / "lesson.html").write_text(LESSON_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
     return out, len(days)
 
 
@@ -642,6 +654,9 @@ textarea { font: inherit; color: var(--text); background: var(--surface); border
 .toast.show { opacity: 1; }
 .notice { background: var(--imm-soft); color: var(--text); border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-top: 16px; }
 .notice code { font-size: 12px; }
+u.lm { text-decoration: underline 2px #e0a800; text-underline-offset: 4px; }
+.lmtags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.lmtag { font-size: 11px; color: #8a6514; background: #f3ecd9; border-radius: 6px; padding: 0 6px; cursor: default; }
 rt { font-size: 10px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
 .lvb { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 6px;
   vertical-align: middle; letter-spacing: .02em; background: var(--chip); color: var(--muted); }
@@ -780,6 +795,7 @@ dialog .hint { font-size: 12px; color: var(--muted); min-height: 1em; margin-top
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       <button class="navlink" id="fetchBtn" type="button" style="cursor:pointer;font:inherit;font-weight:600">🔄 抓取最新新闻</button>
+      <a class="navlink" href="lesson.html">今日一课 <span id="lstatus"></span></a>
       <a class="navlink" href="vocab.html">单词本 <span id="vcount"></span></a>
       <label class="sub">日期&nbsp;<select id="day"></select></label>
     </div>
@@ -845,8 +861,13 @@ const S = DATA.sections, days = Object.keys(DATA.days).sort().reverse();
 const state = { day: days[0], kind: "all", section: null, q: "" };
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const ruby = (x, q) => (x.ruby || [[x.title, ""]]).map(([t, r]) =>
-  r ? `<ruby>${hl(t, q)}<rt>${esc(r)}</rt></ruby>` : hl(t, q)).join("");
+const ruby = (x, q, hits) => (x.ruby || [[x.title, ""]]).map(([t, r]) =>
+  r ? `<ruby>${ul(hl(t, q), hits)}<rt>${esc(r)}</rt></ruby>` : ul(hl(t, q), hits)).join("");
+// 学过的语法点所在的片段加下划线
+const ul = (h, hits) => (hits || []).reduce((s, w) => s.split(esc(w)).join(`<u class="lm">${esc(w)}</u>`), h);
+const MARKS = DATA.marks || {};
+const markTags = x => (MARKS[x.title] || []).map(m =>
+  `<span class="lmtag" title="${esc(m.learned)} 学过">学过 · ${esc(m.title)}</span>`).join("");
 const hl = (s, q) => { s = esc(s); if (!q) return s;
   const r = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"); return s.replace(r, m => `<mark>${m}</mark>`); };
 
@@ -873,7 +894,8 @@ function render() {
       <span class="cnt">${list.length} 条</span></h2>` +
       (list.length ? `<div class="grid">${list.map(x => `
         <article class="card" data-i="${items.indexOf(x)}">
-          <div class="t" lang="ja">${ruby(x, state.q.trim())}</div>
+          <div class="t" lang="ja">${ruby(x, state.q.trim(), (MARKS[x.title] || []).flatMap(m => m.hits))}</div>
+          ${MARKS[x.title] ? `<div class="lmtags">${markTags(x)}</div>` : ""}
           ${x.zh ? `<div class="zh">${hl(x.zh, state.q.trim())}</div>` : ""}
           <div class="tools"><button type="button" class="exbtn" aria-expanded="false">🧠 句子讲解</button>
             ${x.tokens && x.tokens.length ? `<button type="button" class="bdbtn" aria-expanded="false">🔍 逐词拆解</button>` : ""}</div>
@@ -979,7 +1001,11 @@ const api = (path, opt) => fetch(path, opt).then(r => r.ok ? r.json() : r.text()
 const toast = msg => { const t = $("#toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 2200); };
 if (!SERVED) $("#fileNotice").hidden = false;
-else api("/api/vocab").then(d => $("#vcount").textContent = `(${d.words.length})`).catch(() => {});
+else {
+  api("/api/vocab").then(d => $("#vcount").textContent = `(${d.words.length})`).catch(() => {});
+  api("/api/lesson").then(d => $("#lstatus").textContent =
+    d.status.current ? "· 未读" : d.status.due ? `· 复习 ${d.status.due}` : "✓").catch(() => {});
+}
 
 // ---- 手动抓取 ----------------------------------------------------------
 async function pollFetch(first) {
@@ -1094,13 +1120,13 @@ IGNORE_HEADING = "# 不再自动添加"  # 删除过的词记录在这里，自�
 VOCAB_HEADER = ("# 单词本\n\n"
                 "> 由新闻页面划词添加，也可以直接编辑本文件："
                 "每个 `## ` 标题是一个单词，下面的 `- 字段：值` 是它的信息。\n")
-REVIEW_DAYS = [0, 1, 2, 4, 7, 15, 30, 60]  # 熟练度ごとの次回復習までの日数
 AUTO_LEVELS = ("N5", "N4")  # 自動で単語帳に追加する等級
 _vocab_lock = threading.Lock()
 
 # ---- JLPT 辞書 ----------------------------------------------------------
 JLPT_URL = "https://raw.githubusercontent.com/5mdld/anki-jlpt-decks/HEAD/deck-source/notes.csv"
 JLPT_PATH = ROOT / "data" / "jlpt_vocab.json"
+VOCAB_PATH = USER_DIR / "vocab.md"
 JLPT_LEVELS = ["N5", "N4", "N3", "N2", "N1"]
 _jlpt = None
 
@@ -1242,7 +1268,7 @@ def today_jst():
 
 
 def serve(news_dir, port):
-    vocab_path = news_dir / "vocab.md"
+    vocab_path = VOCAB_PATH
     cache_path = news_dir / "translations_zh.json"
     job = {"running": False, "log": [], "started": None, "finished": None, "result": None, "error": None}
 
@@ -1294,6 +1320,13 @@ def serve(news_dir, port):
         def do_GET(self):
             if self.path.split("?")[0] == "/api/fetch":
                 return self._json(job)
+            if self.path.split("?")[0] == "/api/lesson":
+                date = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("date", [None])[0]
+                try:
+                    with _vocab_lock:
+                        return self._json(lesson_view(news_dir, USER_DIR, date, today_jst()))
+                except ValueError as e:
+                    return self._json({"error": str(e)}, 500)
             if self.path.split("?")[0] != "/api/vocab":
                 return super().do_GET()
             with _vocab_lock:
@@ -1312,6 +1345,8 @@ def serve(news_dir, port):
                 data = self._body()
             except ValueError:
                 return self._json({"error": "bad json"}, 400)
+            if path.startswith(("/api/lesson/", "/api/grammar/")):
+                return self._lesson_post(path, data)
             word = str(data.get("word", "")).strip()
             if not word:
                 return self._json({"error": "word is required"}, 400)
@@ -1339,13 +1374,44 @@ def serve(news_dir, port):
                 elif path == "/api/review" and cur:
                     # grade: 0=不认识 1=模糊 2=认识
                     grade = int(data.get("grade", 0))
-                    level = {0: 0, 1: cur["level"], 2: min(cur["level"] + 1, len(REVIEW_DAYS) - 1)}[grade]
-                    days = {0: 0, 1: 1, 2: REVIEW_DAYS[level]}[grade]
-                    cur["level"], cur["due"] = level, (today_jst() + timedelta(days=days)).isoformat()
+                    cur["level"], cur["due"] = next_review(cur["level"], grade, today_jst())
                 else:
                     return self._json({"error": "not found"}, 404)
                 vocab_save(vocab_path, words, ignored)
             return self._json({"ok": True, "count": len(words)})
+
+        def _lesson_post(self, path, data):
+            prog_path, today = USER_DIR / PROGRESS_NAME, today_jst()
+            try:
+                if path == "/api/lesson/generate":
+                    msgs = []
+
+                    def log(msg):  # ページへの返答とサーバーの端末の両方に出す
+                        msgs.append(msg)
+                        print(f"{datetime.now(JST):%H:%M:%S} {msg}", file=sys.stderr, flush=True)
+                    with _vocab_lock:
+                        words = vocab_load(vocab_path)[0]
+                    les = generate_today(news_dir, USER_DIR, today, words, ruby_fn=furigana, log=log,
+                                         lock=_vocab_lock)
+                    if not les:
+                        return self._json({"error": msgs[-1] if msgs else "没有生成课程"}, 500)
+                    with _vocab_lock:
+                        return self._json(lesson_view(news_dir, USER_DIR, None, today))
+                with _vocab_lock:
+                    prog = load_progress(prog_path)
+                    if path == "/api/lesson/done":
+                        mark_done(prog, str(data.get("date", "")), today)
+                        save_progress(prog_path, prog)
+                        build(news_dir)  # 「学过」標記をすぐ反映
+                        return self._json(lesson_view(news_dir, USER_DIR, data.get("date"), today))
+                    if path == "/api/grammar/review":
+                        review_point(prog, str(data.get("id", "")), int(data.get("grade", 0)), today)
+                        save_progress(prog_path, prog)
+                        return self._json({"ok": True})
+            except ValueError as e:  # 進度ファイル破損など
+                print(f"{datetime.now(JST):%H:%M:%S} {path} 出错：{e}", file=sys.stderr, flush=True)
+                return self._json({"error": str(e)}, 500)
+            return self._json({"error": "not found"}, 404)
 
         def do_DELETE(self):
             u = urllib.parse.urlparse(self.path)
@@ -1619,8 +1685,15 @@ def run_fetch(news_dir, log=print):
     (outdir / "raw_candidates.json").write_text(json.dumps(raw, ensure_ascii=False, indent=1))
     (outdir / f"{stem}.json").write_text(json.dumps(picked, ensure_ascii=False, indent=1))
     (outdir / f"{stem}.md").write_text(render(picked, now, since))
-    n_auto = auto_add_vocab(picked, news_dir / "vocab.md")
+    n_auto = auto_add_vocab(picked, VOCAB_PATH)
     log(f"③ 已保存 {outdir / (stem + '.md')}；单词本自动加入 {'/'.join(AUTO_LEVELS)} 单词 {n_auto} 个")
+    try:
+        les = generate_today(news_dir, USER_DIR, now.date(), vocab_load(VOCAB_PATH)[0], ruby_fn=furigana, log=log,
+                             lock=_vocab_lock)
+        if les:
+            log(f"   今日一课：{les['main']['title']}")
+    except Exception as e:  # 課程の失敗でニュースの出力を止めない
+        log(f"   今日一课生成失败：{type(e).__name__}: {e}")
     page, n = build(news_dir)
     log(f"④ 页面已更新（共 {n} 天）")
     return {"date": f"{now:%Y-%m-%d}", "candidates": len(raw), "picked": len(picked), "vocab_added": n_auto}
@@ -1640,6 +1713,7 @@ def main():
     args = ap.parse_args()
     news_dir = Path(args.out)
     news_dir.mkdir(parents=True, exist_ok=True)
+    migrate_user_data(news_dir, USER_DIR)
 
     missing = [m for m in ("pykakasi", "janome") if not _importable(m)]
     if missing:  # 無いと注音・逐語解析が黙って空になるので、ここで止める
@@ -1650,6 +1724,7 @@ def main():
     if not (args.page_only or args.serve):
         run_fetch(news_dir)
     else:
+        print("正在生成页面（新标题需要补全翻译和讲解时，可能要几分钟）…", file=sys.stderr, flush=True)
         page, n = build(news_dir)
         print(f"ページ更新（{n} 日分）: {page}")
     if args.serve:
