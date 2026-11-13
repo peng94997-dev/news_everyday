@@ -2,7 +2,8 @@
 
 fetch_news.py から呼ばれる。このモジュールは fetch_news を import しない（循環を避ける）。
 """
-import contextlib, json, re, subprocess
+import contextlib, json, re, subprocess, time
+from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 
@@ -166,6 +167,7 @@ LESSON_PROMPT = """你是日语老师。学生是中国人，日语水平 N5，�
 - 「why」要讲清楚“为什么这里这样用”，不能只翻译。
 - 新词只从给出的候选词里挑 3–5 个。
 - 只输出一个 JSON 对象，不要代码块或其他文字。
+- 文字里要加引号时只用「」或“”，绝不能用英文双引号 \"（会破坏 JSON）。
 
 学生已经学过的语法：{learned}
 
@@ -187,15 +189,36 @@ SCHEMA_REVIEW = ("{" + SCHEMA_MAIN.format(is_point="这一段是否用到要复�
                  ' "words": [{"word": "单词", "kana": "假名", "zh": "中文", "note": "用法提示"}]}')
 
 
+class LessonOutputError(RuntimeError):
+    """Claude の出力が使えない。raw に原文を持つ（logs/ に保存して調べられるように）。"""
+
+    def __init__(self, msg, raw=""):
+        super().__init__(msg)
+        self.raw = raw
+
+
+def parse_lesson_json(text, max_fixes=20):
+    """出力から JSON オブジェクトを取り出す。中文の引用に使われた未エスケープの " は “” に直して読み直す。"""
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        raise LessonOutputError("Claude 的输出里没有 JSON", raw=text)
+    s = m.group(0)
+    for n in range(max_fixes + 1):
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError as e:
+            # 文字列が途中の " で終わったと解釈され、直後で区切りが無いと言われる → その " が犯人
+            if n == max_fixes or e.pos == 0 or s[e.pos - 1] != '"' or "delimiter" not in e.msg:
+                raise LessonOutputError(f"课程 JSON 解析失败：{e}", raw=text) from e
+            s = s[:e.pos - 1] + ("“" if n % 2 == 0 else "”") + s[e.pos:]
+
+
 def call_claude(prompt, model=LESSON_MODEL, timeout=900):
     r = subprocess.run(["claude", "-p", "--model", model, prompt], capture_output=True, text=True, timeout=timeout)
-    m = re.search(r"\{.*\}", r.stdout, re.S)
-    if r.returncode or not m:
-        raise RuntimeError((r.stdout + r.stderr).strip()[:200])
-    try:
-        return json.loads(m.group(0))
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"课程 JSON 解析失败：{e}") from e
+    if r.returncode:
+        raise LessonOutputError(f"claude CLI 出错（返回码 {r.returncode}）：{(r.stdout + r.stderr).strip()[:200]}",
+                                raw=r.stdout + r.stderr)
+    return parse_lesson_json(r.stdout)
 
 
 def today_items(news_dir, today):
@@ -268,8 +291,19 @@ def _ruby(ruby_fn, text):
     return ([[lead, ""]] if lead else []) + pairs + ([[trail, ""]] if trail else [])
 
 
+def _save_raw(raw_dir, d, raw):
+    """Claude の生出力を logs/ に保存し、ログに添える文を返す。"""
+    if not raw:
+        return ""
+    raw_dir = Path(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    f = raw_dir / f"lesson_raw_{d}_{datetime.now():%H%M%S}.txt"
+    f.write_text(raw)
+    return f"；原始输出已保存到 {f}"
+
+
 def generate_today(news_dir, user_dir, today, vocab_words, ask=call_claude, ruby_fn=lambda s: [], log=print,
-                   syllabus=None, lock=None):
+                   syllabus=None, lock=None, raw_dir=ROOT / "logs"):
     """今日の課を生成して user_dir/lessons/<today>.json に保存する。生成しなかったら None。"""
     user_dir, d = Path(user_dir), today.isoformat()
     path = user_dir / "lessons" / f"{d}.json"
@@ -290,16 +324,23 @@ def generate_today(news_dir, user_dir, today, vocab_words, ask=call_claude, ruby
         log("今日一课：今天的标题里没有合适的语法点")
         return None
     kind = "new" if plan["action"] == "new" else "review"
+    by_id = {p["id"]: p for p in syllabus}
+    what = (f"新课 {plan['point']}（{by_id[plan['point']]['title']}），例句 {len(plan['examples'])} 条" if kind == "new"
+            else f"复习课 {', '.join(plan['points'])}")
     learned = learned_words(vocab_words)
     new_words = pick_new_words(plan.get("examples") or items, learned)
+    log(f"今日一课：{what}；调用 Claude（{LESSON_MODEL}），大约需要 1 分钟…")
+    t0 = time.time()
     try:
         obj = ask(build_prompt(plan, syllabus, prog, learned, new_words, items))
     except Exception as e:
-        log(f"今日一课生成失败：{e}")
+        log(f"今日一课生成失败（{time.time() - t0:.0f} 秒）：{e}" + _save_raw(raw_dir, d, getattr(e, "raw", None)))
         return None
     if not validate_lesson(obj, kind):
-        log("今日一课生成失败：Claude 返回的内容格式不对")
+        log("今日一课生成失败：Claude 返回的内容格式不对" +
+            _save_raw(raw_dir, d, json.dumps(obj, ensure_ascii=False, indent=1)))
         return None
+    log(f"今日一课已生成：{obj['main']['title']}（{time.time() - t0:.0f} 秒）")
     obj.update(date=d, kind=kind, model=LESSON_MODEL, ruby=[_ruby(ruby_fn, r["text"]) for r in obj["main"]["reading"]])
     obj.update(point_id=plan.get("point"), point_ids=plan.get("points", []))
     # Claude を待つ間に他のリクエストが進度や課を書いたかもしれないので、読み直してから書く

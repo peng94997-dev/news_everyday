@@ -394,5 +394,51 @@ class MarksTest(unittest.TestCase):
         self.assertEqual(lesson.grammar_marks(self.SYL, empty(), self.DAYS), {})
 
 
+class ParseTest(unittest.TestCase):
+    def test_parse_repairs_unescaped_ascii_quotes(self):
+        # Claude 実出力（2026-11-13）の再現：中文の引用に ASCII の " を使った
+        raw = '```json\n{"main":{"why":"「の」连起来，表示"外国人滞在者的全面检测"——说明对象。","x":1}}\n```'
+        obj = lesson.parse_lesson_json(raw)
+        self.assertEqual(obj["main"]["why"], "「の」连起来，表示“外国人滞在者的全面检测”——说明对象。")
+        self.assertEqual(obj["main"]["x"], 1)
+
+    def test_parse_plain_json(self):
+        self.assertEqual(lesson.parse_lesson_json('前置き {"a": "b"} 後書き'), {"a": "b"})
+
+    def test_parse_garbage_raises_with_raw(self):
+        with self.assertRaises(lesson.LessonOutputError) as cm:
+            lesson.parse_lesson_json('{"a": [1, 2')
+        self.assertEqual(cm.exception.raw, '{"a": [1, 2')
+        with self.assertRaises(lesson.LessonOutputError):
+            lesson.parse_lesson_json("没有 JSON")
+
+
+class GenerateLogTest(TmpDirs):
+    def test_logs_steps_on_success(self):
+        msgs = []
+        lesson.generate_today(self.news, self.user, TODAY, [], ask=Stub(GOOD), log=msgs.append, syllabus=self.SYL)
+        text = "\n".join(msgs)
+        self.assertIn("no", text)          # 選んだ語法点
+        self.assertIn("调用 Claude", text)
+        self.assertIn("已生成", text)
+
+    def test_saves_raw_output_on_parse_failure(self):
+        msgs, raw_dir = [], Path(self.tmp.name) / "logs"
+        stub = Stub(lesson.LessonOutputError("课程 JSON 解析失败", raw="RAW OUTPUT"))
+        self.assertIsNone(lesson.generate_today(self.news, self.user, TODAY, [], ask=stub, log=msgs.append,
+                                                syllabus=self.SYL, raw_dir=raw_dir))
+        saved = list(raw_dir.glob("lesson_raw_2026-11-14_*.txt"))
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0].read_text(), "RAW OUTPUT")
+        self.assertTrue(any(str(saved[0]) in m for m in msgs))
+
+    def test_logs_invalid_shape_and_saves_it(self):
+        msgs, raw_dir = [], Path(self.tmp.name) / "logs"
+        self.assertIsNone(lesson.generate_today(self.news, self.user, TODAY, [], ask=Stub({"main": {}}),
+                                                log=msgs.append, syllabus=self.SYL, raw_dir=raw_dir))
+        self.assertEqual(len(list(raw_dir.glob("lesson_raw_*.txt"))), 1)
+        self.assertTrue(any("格式不对" in m for m in msgs))
+
+
 if __name__ == "__main__":
     unittest.main()

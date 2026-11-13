@@ -1383,9 +1383,13 @@ def serve(news_dir, port):
             try:
                 if path == "/api/lesson/generate":
                     msgs = []
+
+                    def log(msg):  # ページへの返答とサーバーの端末の両方に出す
+                        msgs.append(msg)
+                        print(f"{datetime.now(JST):%H:%M:%S} {msg}", file=sys.stderr, flush=True)
                     with _vocab_lock:
                         words = vocab_load(vocab_path)[0]
-                    les = generate_today(news_dir, USER_DIR, today, words, ruby_fn=furigana, log=msgs.append,
+                    les = generate_today(news_dir, USER_DIR, today, words, ruby_fn=furigana, log=log,
                                          lock=_vocab_lock)
                     if not les:
                         return self._json({"error": msgs[-1] if msgs else "没有生成课程"}, 500)
@@ -1403,6 +1407,7 @@ def serve(news_dir, port):
                         save_progress(prog_path, prog)
                         return self._json({"ok": True})
             except ValueError as e:  # 進度ファイル破損など
+                print(f"{datetime.now(JST):%H:%M:%S} {path} 出错：{e}", file=sys.stderr, flush=True)
                 return self._json({"error": str(e)}, 500)
             return self._json({"error": "not found"}, 404)
 
