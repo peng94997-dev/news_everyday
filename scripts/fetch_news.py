@@ -35,7 +35,7 @@ from email.utils import parsedate_to_datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from lesson import USER_DIR, migrate_user_data, next_review
+from lesson import USER_DIR, generate_today, migrate_user_data, next_review
 
 # ==========================================================================
 # 1. 収集・精選
@@ -1621,6 +1621,12 @@ def run_fetch(news_dir, log=print):
     (outdir / f"{stem}.md").write_text(render(picked, now, since))
     n_auto = auto_add_vocab(picked, VOCAB_PATH)
     log(f"③ 已保存 {outdir / (stem + '.md')}；单词本自动加入 {'/'.join(AUTO_LEVELS)} 单词 {n_auto} 个")
+    try:
+        les = generate_today(news_dir, USER_DIR, now.date(), vocab_load(VOCAB_PATH)[0], ruby_fn=furigana, log=log)
+        if les:
+            log(f"   今日一课：{les['main']['title']}")
+    except Exception as e:  # 課程の失敗でニュースの出力を止めない
+        log(f"   今日一课生成失败：{type(e).__name__}: {e}")
     page, n = build(news_dir)
     log(f"④ 页面已更新（共 {n} 天）")
     return {"date": f"{now:%Y-%m-%d}", "candidates": len(raw), "picked": len(picked), "vocab_added": n_auto}

@@ -98,6 +98,12 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(plan["point"], "p2")
         self.assertEqual([x["title"] for x in plan["examples"]], ["BBB z", "BBB y"])
 
+    def test_plan_prefers_short_titles(self):
+        long_t = "BBB" + "長" * 40
+        items = [it(long_t, "2026-11-14 10:00"), it("BBB 短い", "2026-11-14 01:00"), it("AAA")]
+        plan = lesson.plan_today(self.SYL, empty(), items, TODAY)
+        self.assertEqual([x["title"] for x in plan["examples"]], ["BBB 短い", long_t])
+
     def test_plan_skips_learned(self):
         prog = empty()
         prog["grammar"]["p1"] = {"learned": "2026-11-10", "level": 1, "due": "2026-11-20"}
@@ -187,6 +193,95 @@ class WordsTest(unittest.TestCase):
                           {"s": "外国", "lv": "N5"}, {"s": "難民", "lv": "N1"}, {"s": "外国", "lv": "N5"}]}]
         got = lesson.pick_new_words(ex, {"東京"}, n=5)
         self.assertEqual([t["s"] for t in got], ["開か", "外国"])
+
+
+GOOD = {"main": {"title": "AAA の BBB", "gist": "g",
+                 "reading": [{"text": "AAA ", "zh": "a", "why": "w", "is_point": False},
+                             {"text": "の BBB", "zh": "b", "why": "w", "is_point": True}]},
+        "point": {"explain": "e", "examples": [{"title": "AAA の CCC", "where": "の", "zh": "z"}]},
+        "words": [{"word": "東京", "kana": "とうきょう", "zh": "东京", "note": ""}]}
+
+
+class Stub:
+    def __init__(self, result):
+        self.result, self.calls = result, 0
+
+    def __call__(self, prompt):
+        self.calls += 1
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+class GenerateTest(unittest.TestCase):
+    SYL = [pt("no", "の")]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self.news, self.user = d / "news", d / "user"
+        (self.news / "2026-11-14").mkdir(parents=True)
+        (self.user / "lessons").mkdir(parents=True)
+        self.items = [it("AAA の BBB"), it("AAA の CCC")]
+        (self.news / "2026-11-14" / "tokyo_news_2026-11-14.json").write_text(json.dumps(self.items))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def gen(self, stub):
+        return lesson.generate_today(self.news, self.user, TODAY, [], ask=stub, log=lambda m: None,
+                                     syllabus=self.SYL)
+
+    def test_generate_writes_lesson_and_progress(self):
+        out = self.gen(Stub(GOOD))
+        self.assertEqual(out["point_id"], "no")
+        self.assertEqual(out["kind"], "new")
+        self.assertTrue((self.user / "lessons" / "2026-11-14.json").exists())
+        prog = lesson.load_progress(self.user / "progress.json")
+        self.assertIs(prog["lessons"]["2026-11-14"]["done"], False)
+
+    def test_generate_idempotent(self):
+        stub = Stub(GOOD)
+        self.gen(stub)
+        self.gen(stub)
+        self.assertEqual(stub.calls, 1)
+
+    def test_generate_bad_output_leaves_no_trace(self):
+        bad = dict(GOOD)
+        del bad["main"]
+        for stub in (Stub(RuntimeError("boom")), Stub(bad)):
+            self.assertIsNone(self.gen(stub))
+            self.assertFalse((self.user / "lessons" / "2026-11-14.json").exists())
+            self.assertFalse((self.user / "progress.json").exists())
+
+    def test_generate_without_items_is_noop(self):
+        (self.news / "2026-11-14" / "tokyo_news_2026-11-14.json").unlink()
+        stub = Stub(GOOD)
+        self.assertIsNone(self.gen(stub))
+        self.assertEqual(stub.calls, 0)
+
+    def test_generate_continue_does_not_call_claude(self):
+        prog = empty()
+        prog["lessons"]["2026-11-13"] = {"kind": "new", "point": "no", "points": [], "done": False}
+        lesson.save_progress(self.user / "progress.json", prog)
+        stub = Stub(GOOD)
+        self.assertIsNone(self.gen(stub))
+        self.assertEqual(stub.calls, 0)
+
+    def test_validate_rejects_reading_not_matching_title(self):
+        bad = json.loads(json.dumps(GOOD))
+        bad["main"]["reading"][1]["text"] = "の XXX"
+        self.assertFalse(lesson.validate_lesson(bad, "new"))
+        self.assertTrue(lesson.validate_lesson(GOOD, "new"))
+
+    def test_review_examples_uses_todays_titles(self):
+        prog = empty()
+        prog["grammar"]["no"] = {"learned": "2026-11-10", "level": 1, "due": "2026-11-14"}
+        got = lesson.review_examples(self.SYL, prog, self.items, TODAY)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0]["id"], "no")
+        self.assertEqual(got[0]["example"]["title"], "AAA の BBB")
+        self.assertEqual(got[0]["hits"], ["の"])
 
 
 if __name__ == "__main__":
