@@ -35,7 +35,7 @@ from email.utils import parsedate_to_datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from lesson import USER_DIR, migrate_user_data
+from lesson import USER_DIR, migrate_user_data, next_review
 
 # ==========================================================================
 # 1. 収集・精選
@@ -1096,7 +1096,6 @@ IGNORE_HEADING = "# 不再自动添加"  # 删除过的词记录在这里，自�
 VOCAB_HEADER = ("# 单词本\n\n"
                 "> 由新闻页面划词添加，也可以直接编辑本文件："
                 "每个 `## ` 标题是一个单词，下面的 `- 字段：值` 是它的信息。\n")
-REVIEW_DAYS = [0, 1, 2, 4, 7, 15, 30, 60]  # 熟练度ごとの次回復習までの日数
 AUTO_LEVELS = ("N5", "N4")  # 自動で単語帳に追加する等級
 _vocab_lock = threading.Lock()
 
@@ -1342,9 +1341,7 @@ def serve(news_dir, port):
                 elif path == "/api/review" and cur:
                     # grade: 0=不认识 1=模糊 2=认识
                     grade = int(data.get("grade", 0))
-                    level = {0: 0, 1: cur["level"], 2: min(cur["level"] + 1, len(REVIEW_DAYS) - 1)}[grade]
-                    days = {0: 0, 1: 1, 2: REVIEW_DAYS[level]}[grade]
-                    cur["level"], cur["due"] = level, (today_jst() + timedelta(days=days)).isoformat()
+                    cur["level"], cur["due"] = next_review(cur["level"], grade, today_jst())
                 else:
                     return self._json({"error": "not found"}, 404)
                 vocab_save(vocab_path, words, ignored)

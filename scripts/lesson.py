@@ -3,6 +3,7 @@
 fetch_news.py から呼ばれる。このモジュールは fetch_news を import しない（循環を避ける）。
 """
 import json, re
+from datetime import timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,3 +50,96 @@ def migrate_user_data(news_dir, user_dir):
         old.rename(new)
         return True
     return False
+
+
+# ---- 学習進度 ----------------------------------------------------------------
+REVIEW_DAYS = [0, 1, 2, 4, 7, 15, 30, 60]  # 熟練度ごとの次回復習までの日数（単語帳と共通）
+PROGRESS_NAME = "progress.json"
+MIN_HITS, LOOKAHEAD, MAX_DUE = 2, 10, 5  # 新しい点は 2 件以上の見出しで／10 個先まで／復習が 5 個を超えたら復習課
+
+
+def next_review(level, grade, today):
+    """grade: 0=不认识 1=模糊 2=认识。新しい (level, due) を返す。"""
+    level = {0: 0, 1: level, 2: min(level + 1, len(REVIEW_DAYS) - 1)}[grade]
+    days = {0: 0, 1: 1, 2: REVIEW_DAYS[level]}[grade]
+    return level, (today + timedelta(days=days)).isoformat()
+
+
+def load_progress(path):
+    path = Path(path)
+    if not path.exists():
+        return {"grammar": {}, "lessons": {}}
+    try:
+        prog = json.loads(path.read_text())
+    except json.JSONDecodeError as e:  # 黙って空にすると学習記録が全部消えるので止める
+        raise ValueError(f"学习进度文件损坏，请手动修复：{path}（{e}）") from e
+    prog.setdefault("grammar", {})
+    prog.setdefault("lessons", {})
+    return prog
+
+
+def save_progress(path, prog):
+    Path(path).write_text(json.dumps(prog, ensure_ascii=False, indent=1))
+
+
+def current_lesson(prog):
+    """まだ「学完了」になっていない最新の課の日付。"""
+    open_ = [d for d, x in prog["lessons"].items() if not x.get("done")]
+    return max(open_) if open_ else None
+
+
+def due_points(prog, syllabus, today):
+    g = prog["grammar"]
+    return [p["id"] for p in syllabus if p["id"] in g and g[p["id"]]["due"] <= today.isoformat()]
+
+
+def plan_today(syllabus, prog, items, today):
+    cur = current_lesson(prog)
+    if cur:
+        return {"action": "continue", "date": cur}
+    due = due_points(prog, syllabus, today)
+    if len(due) <= MAX_DUE:
+        todo = [p for p in syllabus if p["id"] not in prog["grammar"]][:LOOKAHEAD + 1]
+        for p in todo:
+            hits = [x for x in items if match_point(p, x)]
+            if len(hits) >= MIN_HITS:
+                hits.sort(key=lambda x: x.get("published", ""), reverse=True)
+                return {"action": "new", "point": p["id"], "examples": hits[:3]}
+    if due:
+        return {"action": "review", "points": due[:MAX_DUE]}
+    known = {p["id"] for p in syllabus}
+    learned = sorted((v["due"], k) for k, v in prog["grammar"].items() if k in known)
+    if learned:
+        return {"action": "review", "points": [k for _, k in learned[:3]]}
+    return {"action": "none"}
+
+
+def mark_done(prog, date, today):
+    les = prog["lessons"].get(date)
+    if not les or les.get("done"):
+        return
+    les["done"] = True
+    if les.get("kind") == "new" and les.get("point") and les["point"] not in prog["grammar"]:
+        prog["grammar"][les["point"]] = {"learned": today.isoformat(), "level": 1,
+                                         "due": (today + timedelta(days=REVIEW_DAYS[1])).isoformat()}
+
+
+def review_point(prog, point_id, grade, today):
+    g = prog["grammar"].get(point_id)
+    if g:
+        g["level"], g["due"] = next_review(g["level"], grade, today)
+
+
+def learned_words(vocab_words):
+    return {w["word"] for w in vocab_words if int(w.get("level") or 0) >= 1}
+
+
+def pick_new_words(examples, learned, n=5):
+    out, seen = [], set()
+    for x in examples:
+        for t in x.get("tokens") or []:
+            key = t.get("b") or t["s"]
+            if t.get("lv") in ("N5", "N4") and key not in learned and key not in seen:
+                seen.add(key)
+                out.append(t)
+    return out[:n]
