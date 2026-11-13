@@ -1267,10 +1267,25 @@ def today_jst():
     return datetime.now(JST).date()
 
 
-def serve(news_dir, port):
+def make_server(news_dir, port):
+    """ローカルサーバーを作って返す（起動はしない）。"""
     vocab_path = VOCAB_PATH
     cache_path = news_dir / "translations_zh.json"
     job = {"running": False, "log": [], "started": None, "finished": None, "result": None, "error": None}
+    rebuilding = threading.Lock()
+
+    def rebuild_in_background():
+        """ページを裏で再生成する。講解の補完で数分かかることがあるので、リクエストを待たせない。"""
+        def run():
+            if not rebuilding.acquire(blocking=False):  # 再生成中なら重ねない
+                return
+            try:
+                build(news_dir)
+            except Exception as e:
+                print(f"{datetime.now(JST):%H:%M:%S} 页面重新生成失败：{type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            finally:
+                rebuilding.release()
+        threading.Thread(target=run, daemon=True).start()
 
     def run_job():
         def log(msg):
@@ -1306,8 +1321,12 @@ def serve(news_dir, port):
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):  # 返答前にページを閉じた・再読み込みした
+                print(f"{datetime.now(JST):%H:%M:%S} {self.path} 返回前浏览器连接已断开（页面被关闭或刷新）",
+                      file=sys.stderr, flush=True)
 
         def _body(self):
             n = int(self.headers.get("Content-Length") or 0)
@@ -1397,17 +1416,20 @@ def serve(news_dir, port):
                         return self._json({"error": msgs[-1] if msgs else "没有生成课程"}, 500)
                     with _vocab_lock:
                         return self._json(lesson_view(news_dir, USER_DIR, None, today))
-                with _vocab_lock:
-                    prog = load_progress(prog_path)
-                    if path == "/api/lesson/done":
+                if path == "/api/lesson/done":
+                    with _vocab_lock:
+                        prog = load_progress(prog_path)
                         mark_done(prog, str(data.get("date", "")), today)
                         save_progress(prog_path, prog)
-                        build(news_dir)  # 「学过」標記をすぐ反映
-                        return self._json(lesson_view(news_dir, USER_DIR, data.get("date"), today))
-                    if path == "/api/grammar/review":
+                        view = lesson_view(news_dir, USER_DIR, data.get("date"), today)
+                    rebuild_in_background()  # 「学过」標記を反映（ロックの外で、待たせない）
+                    return self._json(view)
+                if path == "/api/grammar/review":
+                    with _vocab_lock:
+                        prog = load_progress(prog_path)
                         review_point(prog, str(data.get("id", "")), int(data.get("grade", 0)), today)
                         save_progress(prog_path, prog)
-                        return self._json({"ok": True})
+                    return self._json({"ok": True})
             except ValueError as e:  # 進度ファイル破損など
                 print(f"{datetime.now(JST):%H:%M:%S} {path} 出错：{e}", file=sys.stderr, flush=True)
                 return self._json({"error": str(e)}, 500)
@@ -1425,7 +1447,11 @@ def serve(news_dir, port):
                 vocab_save(vocab_path, words, ignored)
             return self._json({"ok": True, "count": len(words)})
 
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+
+
+def serve(news_dir, port):
+    httpd = make_server(news_dir, port)
     print(f"ローカルサーバー起動: http://localhost:{port}/  （単語帳: http://localhost:{port}/vocab.html、Ctrl+C で終了）")
     try:
         httpd.serve_forever()
