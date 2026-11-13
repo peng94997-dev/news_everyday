@@ -213,7 +213,7 @@ class Stub:
         return self.result
 
 
-class GenerateTest(unittest.TestCase):
+class TmpDirs(unittest.TestCase):
     SYL = [pt("no", "の")]
 
     def setUp(self):
@@ -228,6 +228,8 @@ class GenerateTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+
+class GenerateTest(TmpDirs):
     def gen(self, stub):
         return lesson.generate_today(self.news, self.user, TODAY, [], ask=stub, log=lambda m: None,
                                      syllabus=self.SYL)
@@ -239,6 +241,12 @@ class GenerateTest(unittest.TestCase):
         self.assertTrue((self.user / "lessons" / "2026-11-14.json").exists())
         prog = lesson.load_progress(self.user / "progress.json")
         self.assertIs(prog["lessons"]["2026-11-14"]["done"], False)
+
+    def test_ruby_ignores_surrounding_space(self):
+        strict = lambda s: [[s, "r"]] if s == s.strip() else [[s, ""]]  # furigana と同じく前後の空白で失敗する
+        out = lesson.generate_today(self.news, self.user, TODAY, [], ask=Stub(GOOD), ruby_fn=strict,
+                                    log=lambda m: None, syllabus=self.SYL)
+        self.assertEqual(out["ruby"][0], [["AAA", "r"], [" ", ""]])
 
     def test_generate_idempotent(self):
         stub = Stub(GOOD)
@@ -282,6 +290,46 @@ class GenerateTest(unittest.TestCase):
         self.assertEqual(got[0]["id"], "no")
         self.assertEqual(got[0]["example"]["title"], "AAA の BBB")
         self.assertEqual(got[0]["hits"], ["の"])
+
+
+class ViewTest(TmpDirs):
+    def write(self, d, done):
+        les = dict(GOOD, date=d, kind="new", point_id="no", point_ids=[])
+        (self.user / "lessons" / f"{d}.json").write_text(json.dumps(les))
+        prog = lesson.load_progress(self.user / "progress.json")
+        prog["lessons"][d] = {"kind": "new", "point": "no", "points": [], "done": done}
+        lesson.save_progress(self.user / "progress.json", prog)
+
+    def view(self, date=None):
+        return lesson.lesson_view(self.news, self.user, date, TODAY, syllabus=self.SYL)
+
+    def test_lesson_view_prefers_current(self):
+        self.write("2026-11-12", False)
+        self.write("2026-11-13", True)
+        v = self.view()
+        self.assertEqual(v["date"], "2026-11-12")
+        self.assertFalse(v["done"])
+        self.assertEqual(v["status"]["current"], "2026-11-12")
+
+    def test_lesson_view_latest_when_all_done(self):
+        self.write("2026-11-12", True)
+        self.write("2026-11-13", True)
+        self.assertEqual(self.view()["date"], "2026-11-13")
+        self.assertEqual(self.view("2026-11-12")["date"], "2026-11-12")
+
+    def test_lesson_view_history_order(self):
+        self.write("2026-11-12", True)
+        self.write("2026-11-13", False)
+        h = self.view()["history"]
+        self.assertEqual([x["date"] for x in h], ["2026-11-13", "2026-11-12"])
+        self.assertEqual(h[0]["title"], "AAA の BBB")
+
+    def test_lesson_view_empty(self):
+        v = self.view()
+        self.assertIsNone(v["lesson"])
+        self.assertIsNone(v["date"])
+        self.assertEqual(v["history"], [])
+        self.assertEqual(v["status"], {"current": None, "due": 0})
 
 
 if __name__ == "__main__":

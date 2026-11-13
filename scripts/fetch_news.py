@@ -35,7 +35,8 @@ from email.utils import parsedate_to_datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from lesson import USER_DIR, generate_today, migrate_user_data, next_review
+from lesson import (LESSON_TEMPLATE, PROGRESS_NAME, USER_DIR, generate_today, lesson_view, load_progress,
+                    mark_done, migrate_user_data, next_review, review_point, save_progress)
 
 # ==========================================================================
 # 1. 収集・精選
@@ -593,6 +594,7 @@ def build(news_dir):
     out = news_dir / "index.html"
     out.write_text(TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS).replace("/*__DATA__*/null", data))
     (news_dir / "vocab.html").write_text(VOCAB_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
+    (news_dir / "lesson.html").write_text(LESSON_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
     return out, len(days)
 
 
@@ -1296,6 +1298,13 @@ def serve(news_dir, port):
         def do_GET(self):
             if self.path.split("?")[0] == "/api/fetch":
                 return self._json(job)
+            if self.path.split("?")[0] == "/api/lesson":
+                date = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("date", [None])[0]
+                try:
+                    with _vocab_lock:
+                        return self._json(lesson_view(news_dir, USER_DIR, date, today_jst()))
+                except ValueError as e:
+                    return self._json({"error": str(e)}, 500)
             if self.path.split("?")[0] != "/api/vocab":
                 return super().do_GET()
             with _vocab_lock:
@@ -1314,6 +1323,8 @@ def serve(news_dir, port):
                 data = self._body()
             except ValueError:
                 return self._json({"error": "bad json"}, 400)
+            if path.startswith(("/api/lesson/", "/api/grammar/")):
+                return self._lesson_post(path, data)
             word = str(data.get("word", "")).strip()
             if not word:
                 return self._json({"error": "word is required"}, 400)
@@ -1346,6 +1357,33 @@ def serve(news_dir, port):
                     return self._json({"error": "not found"}, 404)
                 vocab_save(vocab_path, words, ignored)
             return self._json({"ok": True, "count": len(words)})
+
+        def _lesson_post(self, path, data):
+            prog_path, today = USER_DIR / PROGRESS_NAME, today_jst()
+            try:
+                if path == "/api/lesson/generate":
+                    msgs = []
+                    with _vocab_lock:
+                        words = vocab_load(vocab_path)[0]
+                    les = generate_today(news_dir, USER_DIR, today, words, ruby_fn=furigana, log=msgs.append)
+                    if not les:
+                        return self._json({"error": msgs[-1] if msgs else "没有生成课程"}, 500)
+                    with _vocab_lock:
+                        return self._json(lesson_view(news_dir, USER_DIR, None, today))
+                with _vocab_lock:
+                    prog = load_progress(prog_path)
+                    if path == "/api/lesson/done":
+                        mark_done(prog, str(data.get("date", "")), today)
+                        save_progress(prog_path, prog)
+                        build(news_dir)  # 「学过」標記をすぐ反映
+                        return self._json(lesson_view(news_dir, USER_DIR, data.get("date"), today))
+                    if path == "/api/grammar/review":
+                        review_point(prog, str(data.get("id", "")), int(data.get("grade", 0)), today)
+                        save_progress(prog_path, prog)
+                        return self._json({"ok": True})
+            except ValueError as e:  # 進度ファイル破損など
+                return self._json({"error": str(e)}, 500)
+            return self._json({"error": "not found"}, 404)
 
         def do_DELETE(self):
             u = urllib.parse.urlparse(self.path)

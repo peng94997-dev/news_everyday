@@ -248,6 +248,14 @@ def review_examples(syllabus, prog, items, today):
     return out
 
 
+def _ruby(ruby_fn, text):
+    """前後の空白を外して読みを付け、空白は読み無しの区切りとして戻す（janome は先頭の空白を落とす）。"""
+    core = text.strip()
+    lead, trail = text[:len(text) - len(text.lstrip())], text[len(text.rstrip()):]
+    pairs = [list(p) for p in ruby_fn(core)] if core else []
+    return ([[lead, ""]] if lead else []) + pairs + ([[trail, ""]] if trail else [])
+
+
 def generate_today(news_dir, user_dir, today, vocab_words, ask=call_claude, ruby_fn=lambda s: [], log=print,
                    syllabus=None):
     """今日の課を生成して user_dir/lessons/<today>.json に保存する。生成しなかったら None。"""
@@ -280,10 +288,180 @@ def generate_today(news_dir, user_dir, today, vocab_words, ask=call_claude, ruby
     if not validate_lesson(obj, kind):
         log("今日一课生成失败：Claude 返回的内容格式不对")
         return None
-    obj.update(date=d, kind=kind, model=LESSON_MODEL, ruby=[ruby_fn(r["text"]) for r in obj["main"]["reading"]])
+    obj.update(date=d, kind=kind, model=LESSON_MODEL, ruby=[_ruby(ruby_fn, r["text"]) for r in obj["main"]["reading"]])
     obj.update(point_id=plan.get("point"), point_ids=plan.get("points", []))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=1))
     prog["lessons"][d] = {"kind": kind, "point": plan.get("point"), "points": plan.get("points", []), "done": False}
     save_progress(prog_path, prog)
     return obj
+
+
+# ---- 課程ページ ----------------------------------------------------------------
+def lesson_view(news_dir, user_dir, date, today, syllabus=None):
+    """課程ページに渡すデータ。date が無ければ未完了の課 → 最新の課。"""
+    user_dir = Path(user_dir)
+    syllabus = syllabus if syllabus is not None else load_syllabus()
+    prog = load_progress(user_dir / PROGRESS_NAME)
+    files = {f.stem: f for f in (user_dir / "lessons").glob("*.json")}
+    history = []
+    for d in sorted(files, reverse=True):
+        try:
+            title = json.loads(files[d].read_text())["main"]["title"]
+        except (ValueError, KeyError):
+            continue
+        history.append({"date": d, "title": title, "done": bool(prog["lessons"].get(d, {}).get("done"))})
+    cur = current_lesson(prog)
+    date = date if date in files else (cur if cur in files else (history[0]["date"] if history else None))
+    return {"lesson": json.loads(files[date].read_text()) if date else None, "date": date,
+            "done": bool(date and prog["lessons"].get(date, {}).get("done")),
+            "review": review_examples(syllabus, prog, today_items(news_dir, today), today),
+            "history": history,
+            "status": {"current": cur, "due": len(due_points(prog, syllabus, today))}}
+
+
+LESSON_TEMPLATE = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>今日一课</title>
+<style>
+/*__BASE_CSS__*/
+.wrap { max-width: 760px; }
+section { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin-top: 18px; }
+section h2 { font-size: 15px; margin: 0 0 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+.title { font-size: 22px; line-height: 2.2; font-weight: 600; word-break: break-word; }
+.gist { font-size: 15px; margin-top: 6px; }
+.seg { display: grid; grid-template-columns: minmax(90px, 34%) 1fr; gap: 12px; padding: 10px 0; border-top: 1px dashed var(--line); }
+.seg:first-of-type { border-top: 0; }
+.seg .ja { font-size: 18px; line-height: 2.1; word-break: break-word; }
+.seg.pt .ja { background: #f3d36b55; border-radius: 6px; padding: 0 6px; }
+.seg .zh { font-weight: 600; }
+.seg .why { color: var(--muted); font-size: 14px; margin-top: 2px; }
+.explain { font-size: 15px; white-space: pre-wrap; }
+.ex { margin-top: 12px; padding: 10px 12px; background: var(--chip); border-radius: 10px; }
+.ex .t { font-size: 16px; line-height: 2; } .ex .z { color: var(--muted); font-size: 13px; }
+.word { display: flex; gap: 12px; align-items: center; padding: 8px 0; border-top: 1px dashed var(--line); flex-wrap: wrap; }
+.word:first-of-type { border-top: 0; }
+.word .w { font-size: 20px; font-weight: 700; } .word .k { color: var(--evt); }
+.word .n { color: var(--muted); font-size: 13px; flex-basis: 100%; }
+.word .btn { margin-left: auto; padding: 4px 12px; font-size: 13px; }
+.rv { padding: 10px 0; border-top: 1px dashed var(--line); } .rv:first-of-type { border-top: 0; }
+.rv .h { font-weight: 700; } .rv .b { color: var(--muted); font-size: 14px; }
+.rv .ops { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.done-bar { display: flex; justify-content: center; margin-top: 22px; }
+.done-bar .btn { font-size: 16px; padding: 12px 28px; }
+.hist a { display: block; color: var(--text); text-decoration: none; padding: 6px 0; border-top: 1px dashed var(--line); font-size: 14px; }
+.hist a:first-of-type { border-top: 0; }
+.hist a.cur { font-weight: 700; }
+.hist .d { color: var(--muted); margin-right: 8px; }
+details.ans summary { cursor: pointer; color: var(--evt); margin-top: 8px; }
+@media (max-width: 560px) { .seg { grid-template-columns: 1fr; gap: 2px; } .title { font-size: 19px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div><h1>今日一课</h1><div class="sub" id="sub">每天一个语法点，认真读完</div></div>
+    <div style="display:flex;gap:10px"><a class="navlink" href="index.html">新闻</a><a class="navlink" href="vocab.html">单词本</a></div>
+  </header>
+  <div class="notice" id="fileNotice" hidden>今日一课需要本地服务，请运行
+    <code>python3 scripts/fetch_news.py --serve</code>，然后访问 <code>http://localhost:8765/lesson.html</code></div>
+  <div id="main"></div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const toast = msg => { const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 2200); };
+const api = (path, opt) => fetch(path, opt).then(r => r.ok ? r.json() : r.json().then(j => Promise.reject(new Error(j.error || r.status))));
+const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body || {}) });
+const ruby = (pairs, text) => pairs && pairs.length
+  ? pairs.map(([t, r]) => r ? `<ruby>${esc(t)}<rt>${esc(r)}</rt></ruby>` : esc(t)).join("") : esc(text);
+let V = null;
+
+async function load(date) {
+  try { V = await api("/api/lesson" + (date ? "?date=" + date : "")); }
+  catch (e) { $("#main").innerHTML = `<div class="empty">读取失败：${esc(e.message)}</div>`; return; }
+  render();
+}
+
+function render() {
+  const L = V.lesson, m = $("#main");
+  if (!L) {
+    m.innerHTML = `<section><div class="empty">还没有课程。抓取新闻后会自动生成，也可以现在生成。<br><br>
+      <button class="btn primary" id="gen">生成今天的课</button></div></section>` + reviewHtml() + histHtml();
+    $("#gen").onclick = generate; bindReview(); return;
+  }
+  $("#sub").textContent = `${L.date} · ${L.kind === "new" ? "新课" : "复习课"}${V.done ? " · 已学完 ✓" : ""}`;
+  const main = L.main;
+  let h = `<section><h2>① 今日标题</h2><div class="title">${ruby(L.ruby && L.ruby.flat ? L.ruby.flat() : null, main.title)}</div>
+    <div class="gist">${esc(main.gist)}</div></section>`;
+  h += `<section><h2>② 逐词精读</h2>` + main.reading.map((r, i) =>
+    `<div class="seg${r.is_point ? " pt" : ""}"><div class="ja">${ruby(L.ruby && L.ruby[i], r.text)}</div>
+     <div><div class="zh">${esc(r.zh)}</div><div class="why">${esc(r.why)}</div></div></div>`).join("") + `</section>`;
+  const pts = L.kind === "new" ? [L.point] : (L.points || []);
+  h += `<section><h2>③ ${L.kind === "new" ? "今日语法点" : "复习的语法点"}</h2>` + pts.map(p =>
+    `<div class="explain">${esc(p.explain)}</div>` + (p.examples || []).map(e =>
+      `<div class="ex"><div class="t">${esc(e.title).replace(esc(e.where), `<mark>${esc(e.where)}</mark>`)}</div>
+       <div class="z">${esc(e.zh)}</div></div>`).join("")).join("<hr>") + `</section>`;
+  if ((L.words || []).length) h += `<section><h2>④ 今日新词</h2>` + L.words.map((w, i) =>
+    `<div class="word"><span class="w">${esc(w.word)}</span><span class="k">${esc(w.kana)}</span><span>${esc(w.zh)}</span>
+     <button class="btn" data-w="${i}">加入单词本</button>${w.note ? `<div class="n">${esc(w.note)}</div>` : ""}</div>`).join("") + `</section>`;
+  h += reviewHtml();
+  if (L.quiz) h += `<section><h2>⑥ 小测验</h2><div class="ex"><div class="t">${esc(L.quiz.title)}</div></div>
+    <p>${esc(L.quiz.question)}</p><details class="ans"><summary>看答案</summary><p>${esc(L.quiz.answer)}</p></details></section>`;
+  h += `<div class="done-bar"><button class="btn primary" id="done" ${V.done ? "disabled" : ""}>${V.done ? "已学完 ✓" : "学完了"}</button></div>`;
+  h += histHtml();
+  m.innerHTML = h;
+  $("#done").onclick = async () => {
+    try { V = await post("/api/lesson/done", { date: L.date }); toast("记下了，明天会提醒你复习"); render(); }
+    catch (e) { toast("保存失败：" + e.message); }
+  };
+  m.querySelectorAll("[data-w]").forEach(b => b.onclick = async () => {
+    const w = L.words[+b.dataset.w];
+    try { await post("/api/vocab", { word: w.word, kana: w.kana, zh: w.zh, sentence: main.title, sentence_zh: main.gist });
+      b.disabled = true; b.textContent = "已加入"; } catch (e) { toast("加入失败：" + e.message); }
+  });
+  bindReview();
+}
+
+function reviewHtml() {
+  if (!V.review.length) return "";
+  return `<section><h2>⑤ 复习（${V.review.length}）</h2>` + V.review.map(r =>
+    `<div class="rv" data-id="${esc(r.id)}"><div class="h">${esc(r.title)}</div><div class="b">${esc(r.brief)}</div>
+     ${r.example ? `<div class="ex"><div class="t">${ruby(r.example.ruby, r.example.title)}</div><div class="z">${esc(r.example.zh)}
+       · 在「${r.hits.map(esc).join("、")}」</div></div>` : ""}
+     <div class="ops"><button class="btn" data-g="0">不认识</button><button class="btn" data-g="1">模糊</button>
+       <button class="btn primary" data-g="2">认识</button></div></div>`).join("") + `</section>`;
+}
+
+function bindReview() {
+  document.querySelectorAll(".rv [data-g]").forEach(b => b.onclick = async () => {
+    const rv = b.closest(".rv");
+    try { await post("/api/grammar/review", { id: rv.dataset.id, grade: +b.dataset.g }); rv.remove(); toast("已记录"); }
+    catch (e) { toast("保存失败：" + e.message); }
+  });
+}
+
+function histHtml() {
+  if (!V.history.length) return "";
+  return `<section class="hist"><h2>历史课程</h2>` + V.history.map(x =>
+    `<a href="#${x.date}" class="${x.date === V.date ? "cur" : ""}"><span class="d">${x.date}</span>${esc(x.title)} ${x.done ? "✓" : "· 未学完"}</a>`).join("") + `</section>`;
+}
+
+async function generate() {
+  const b = $("#gen"); b.disabled = true; b.textContent = "正在生成（约 1 分钟）…";
+  try { V = await post("/api/lesson/generate"); render(); }
+  catch (e) { toast("生成失败：" + e.message); b.disabled = false; b.textContent = "生成今天的课"; }
+}
+
+window.onhashchange = () => load(location.hash.slice(1));
+if (!location.protocol.startsWith("http")) $("#fileNotice").hidden = false;
+else load(location.hash.slice(1));
+</script>
+</body>
+</html>
+"""
