@@ -22,15 +22,15 @@
 - 同一时间只有一节「当前课」：最近一节课未「学完了」时不推进、不为新点调用 Claude。
 - 「学过」标记和选课绝不调用 Claude。
 - `--page-only` 不生成课程；课程生成失败只记日志，不影响新闻产出。
-- 项目当前不是 git 仓库：如果执行前没有 `git init`，跳过各任务的 Commit 步骤。
+- 个人数据一律在 `USER_DIR = ROOT / "user"`（gitignored）：`progress.json`、`vocab.md`、`lessons/<date>.json`。不得写进 `news/`。
 
 ## Review Focus
 
-1. 当天没有新闻文件（抓取失败、0 条）→ 不生成课程、不改进度，课程页仍显示当前课或「今天还没有新闻」，不报错。→ Task 3 `test_generate_without_items_is_noop`
-2. Claude 返回非 JSON 或缺字段 → 不写 `lesson.json`、进度不变，之后可以重新生成。→ Task 3 `test_generate_bad_output_leaves_no_trace`
-3. `progress.json` 损坏 → 报错并拒绝写入，绝不悄悄重置成空（会丢掉全部学习记录）；文件不存在则视为空。→ Task 2 `test_corrupt_progress_raises`
-4. 同一天重复抓取或重复点「重新生成」→ 已有 `lesson.json` 时直接返回，不再调用 Claude；重复点「学完了」不改变已排的复习日期。→ Task 2 `test_mark_done_idempotent`、Task 3 `test_generate_idempotent`
-5. 使用者手动编辑大纲，删掉了进度里已有的点 → 该点被忽略，不崩溃。→ Task 2 `test_unknown_point_in_progress_ignored`
+1. 当天没有新闻文件（抓取失败、0 条）→ 不生成课程、不改进度，课程页仍显示当前课或「今天还没有新闻」，不报错。→ Task 4 `test_generate_without_items_is_noop`
+2. Claude 返回非 JSON 或缺字段 → 不写课程文件、进度不变，之后可以重新生成。→ Task 4 `test_generate_bad_output_leaves_no_trace`
+3. `progress.json` 损坏 → 报错并拒绝写入，绝不悄悄重置成空（会丢掉全部学习记录）；文件不存在则视为空。→ Task 3 `test_corrupt_progress_raises`
+4. 同一天重复抓取或重复点「重新生成」→ 已有当天课程文件时直接返回，不再调用 Claude；重复点「学完了」不改变已排的复习日期。→ Task 3 `test_mark_done_idempotent`、Task 4 `test_generate_idempotent`
+5. 使用者手动编辑大纲，删掉了进度里已有的点 → 该点被忽略，不崩溃。→ Task 3 `test_unknown_point_in_progress_ignored`
 
 ---
 
@@ -97,7 +97,28 @@ class MatchTest(unittest.TestCase):
 
 ---
 
-### Task 2: 进度与选课
+### Task 2: 个人数据目录 `user/`
+
+**Files:**
+- Modify: `scripts/lesson.py`、`scripts/fetch_news.py`（所有用到 `news_dir / "vocab.md"` 的地方）、`.gitignore`、`readme.md` 不在此任务改
+- Test: `tests/test_lesson.py`
+
+**Interfaces:**
+- Produces:
+  - `USER_DIR: Path = ROOT / "user"`
+  - `migrate_user_data(news_dir: Path, user_dir: Path) -> bool`：创建 `user_dir` 和 `user_dir/lessons`；`news_dir/vocab.md` 存在且 `user_dir/vocab.md` 不存在时把它移过去，返回 True；否则什么都不动，返回 False。
+  - `fetch_news.py` 里新增 `VOCAB_PATH = USER_DIR / "vocab.md"`，替换全部 `news_dir / "vocab.md"`；`main()` 一开始调用 `migrate_user_data`。
+- `.gitignore` 加 `user/` 和 `news/`；然后 `git rm -r --cached news` 让 git 不再跟踪（本地文件保留）。
+
+- [ ] **Step 1: 写失败的测试**：`test_migrate_moves_vocab`（旧文件消失、新文件内容相同、返回 True）、`test_migrate_never_overwrites`（两边都有时都不变、返回 False）
+- [ ] **Step 2: 运行测试，确认失败**
+- [ ] **Step 3: 实现 `migrate_user_data`，修改 `fetch_news.py`、`.gitignore`，执行 `git rm -r --cached news`**
+- [ ] **Step 4: 运行全部测试**；运行 `--page-only`，确认 `user/vocab.md` 里有原来的 118 个词，`news/vocab.md` 不存在；`git status` 不再显示 `news/` 和 `user/`
+- [ ] **Step 5: Commit**：`feat: per-user data directory`
+
+---
+
+### Task 3: 进度与选课
 
 **Files:**
 - Modify: `scripts/lesson.py`
@@ -105,7 +126,7 @@ class MatchTest(unittest.TestCase):
 - Test: `tests/test_lesson.py`
 
 **Interfaces:**
-- Consumes: `load_syllabus`、`match_point`（Task 1）
+- Consumes: `load_syllabus`、`match_point`（Task 1）、`USER_DIR`（Task 2）
 - Produces:
   - `REVIEW_DAYS: list[int]`；`PROGRESS_NAME = "progress.json"`
   - `next_review(level: int, grade: int, today: date) -> tuple[int, str]`：返回新的 `(level, due_iso)`，规则与现有 `/api/review` 完全一致。
@@ -151,7 +172,7 @@ def test_pick_new_words_skips_learned(self):
 
 ---
 
-### Task 3: 生成课程
+### Task 4: 生成课程
 
 **Files:**
 - Modify: `scripts/lesson.py`
@@ -165,7 +186,7 @@ def test_pick_new_words_skips_learned(self):
   - `build_prompt(plan: dict, syllabus: list[dict], prog: dict, learned: set[str], new_words: list[dict]) -> str`
   - `validate_lesson(obj: dict, kind: str) -> bool`
   - `today_items(news_dir: Path, today: date) -> list[dict]`：读 `news/<today>/tokyo_news_<today>.json`，不存在时返回 `[]`。
-  - `generate_today(news_dir: Path, today: date, vocab_words: list[dict], ask=call_claude, ruby_fn=lambda s: [], log=print) -> dict | None`：按 `plan_today` 执行。`continue` / `none` / 无新闻时不调用 Claude，返回 `None`。`news/<today>/lesson.json` 已存在时直接读出返回，不调用 Claude。成功时写 `lesson.json`，在 `progress["lessons"][today]` 记一条 `done: false` 的课，然后返回课程。Claude 调用失败或校验不通过时 `log` 一行，什么都不写，返回 `None`。
+  - `generate_today(news_dir: Path, user_dir: Path, today: date, vocab_words: list[dict], ask=call_claude, ruby_fn=lambda s: [], log=print) -> dict | None`：按 `plan_today` 执行。`continue` / `none` / 无新闻时不调用 Claude，返回 `None`。`user/lessons/<today>.json` 已存在时直接读出返回，不调用 Claude。成功时写 `user/lessons/<today>.json`，在 `progress["lessons"][today]` 记一条 `done: false` 的课，然后返回课程。Claude 调用失败或校验不通过时 `log` 一行，什么都不写，返回 `None`。
   - `review_examples(syllabus, prog, items, today) -> list[dict]`：对每个到期的点，从 `items` 里找一条命中的标题，返回 `{"id", "title", "brief", "example": item | None, "hits": [str]}`。查看课程时实时计算，不调用 Claude。
 - Claude 输出格式（写进提示词，`validate_lesson` 据此校验）：
 
@@ -178,15 +199,15 @@ def test_pick_new_words_skips_learned(self):
 ```
 
   - `quiz` 可选。复习课时 `point` 换成 `points: [{"id", "explain", "examples": [...]}]`。`main.reading` 的 `text` 依次拼起来必须等于 `main.title`，否则校验不通过。
-  - 写进 `lesson.json` 时再加上：`date`、`kind`、`point` 或 `points`、`model`，以及 `ruby`（对 `reading` 每一段的 `text` 调用 `furigana` 得到）。`furigana` 由 `fetch_news` 作为参数 `ruby_fn` 传给 `generate_today`，默认 `lambda s: []`。这样 `lesson.py` 不需要导入 `fetch_news`。
+  - 写进课程文件时再加上：`date`、`kind`、`point` 或 `points`、`model`，以及 `ruby`（对 `reading` 每一段的 `text` 调用 `furigana` 得到）。`furigana` 由 `fetch_news` 作为参数 `ruby_fn` 传给 `generate_today`，默认 `lambda s: []`。这样 `lesson.py` 不需要导入 `fetch_news`。
 - 提示词要求：讲解只能用使用者已学过的语法点（列出它们的 `title`）和最基础的术语；`why` 要讲「为什么这样用」，不能只翻译；新词从传入的 `new_words` 里选。
 
 - [ ] **Step 1: 写失败的测试**（`ask` 用桩函数，临时目录放 fixture）
 
 ```python
-def test_generate_writes_lesson_and_progress(self):  # 桩返回合法课程 → lesson.json 存在，lessons[today].done is False
+def test_generate_writes_lesson_and_progress(self):  # 桩返回合法课程 → 课程文件存在，lessons[today].done is False
 def test_generate_idempotent(self):                  # 连续调用两次 → 桩只被调用 1 次
-def test_generate_bad_output_leaves_no_trace(self):  # 桩抛 RuntimeError；另一次返回缺 main 的 dict → 都没有 lesson.json，progress 与调用前相同
+def test_generate_bad_output_leaves_no_trace(self):  # 桩抛 RuntimeError；另一次返回缺 main 的 dict → 都没有课程文件，progress 与调用前相同
 def test_generate_without_items_is_noop(self):       # 当天没有新闻文件 → 返回 None，桩未被调用
 def test_generate_continue_does_not_call_claude(self):
 def test_validate_rejects_reading_not_matching_title(self):
@@ -197,17 +218,17 @@ def test_review_examples_uses_todays_titles(self):
 
 - [ ] **Step 3: 实现上述函数**
 
-- [ ] **Step 4: 接到 `run_fetch`**：用 `try` 包住 `generate_today(news_dir, now.date(), vocab_load(news_dir / "vocab.md")[0], ruby_fn=furigana, log=log)`，任何异常都只记一条 `log`；成功时记录「今日一课：<点的 title>」。
+- [ ] **Step 4: 接到 `run_fetch`**：用 `try` 包住 `generate_today(news_dir, USER_DIR, now.date(), vocab_load(VOCAB_PATH)[0], ruby_fn=furigana, log=log)`，任何异常都只记一条 `log`；成功时记录「今日一课：<点的 title>」。
 
 - [ ] **Step 5: 运行全部测试，确认通过**
 
-- [ ] **Step 6: 真实冒烟测试**：在临时目录里复制 `news/` 的内容，删掉其中的 `progress.json` 和 `lesson.json`，在 Python 里对 2026-11-13 调用一次 `generate_today`（真实的 `claude`），打开生成的 `lesson.json` 人工读一遍：讲解是否只用了已学内容、`why` 是否讲清了原因。
+- [ ] **Step 6: 真实冒烟测试**：在临时目录里复制 `news/` 的内容，以临时目录作为 `user_dir`，在 Python 里对 2026-11-13 调用一次 `generate_today`（真实的 `claude`），打开生成的课程文件 人工读一遍：讲解是否只用了已学内容、`why` 是否讲清了原因。
 
 - [ ] **Step 7: Commit**：`feat: generate daily lesson with claude`
 
 ---
 
-### Task 4: 课程页与接口
+### Task 5: 课程页与接口
 
 **Files:**
 - Modify: `scripts/lesson.py`（加入 `LESSON_TEMPLATE`）
@@ -218,7 +239,7 @@ def test_review_examples_uses_todays_titles(self):
 - Consumes: Task 2、Task 3
 - Produces:
   - `LESSON_TEMPLATE: str`：含 `/*__BASE_CSS__*/` 占位，与现有模板相同。
-  - `lesson_view(news_dir: Path, date: str | None, today: date) -> dict`：`date` 为空时取「当前课」，没有当前课就取最近一节。返回 `{"lesson": dict | None, "date": str | None, "done": bool, "review": review_examples(...)（用今天的新闻）, "history": [{"date", "title", "done"}]（按日期倒序）, "status": {"current": str | None, "due": int}}`。
+  - `lesson_view(news_dir: Path, user_dir: Path, date: str | None, today: date) -> dict`：`date` 为空时取「当前课」，没有当前课就取最近一节。返回 `{"lesson": dict | None, "date": str | None, "done": bool, "review": review_examples(...)（用今天的新闻）, "history": [{"date", "title", "done"}]（按日期倒序）, "status": {"current": str | None, "due": int}}`。
   - 接口（都返回 JSON）：
     - `GET /api/lesson?date=` → `lesson_view`
     - `POST /api/lesson/done {date}` → `mark_done` 后保存，返回 `lesson_view`
@@ -241,7 +262,7 @@ def test_review_examples_uses_todays_titles(self):
 
 ---
 
-### Task 5: 新闻页入口和「学过」标记
+### Task 6: 新闻页入口和「学过」标记
 
 **Files:**
 - Modify: `scripts/lesson.py`
@@ -268,9 +289,9 @@ def test_review_examples_uses_todays_titles(self):
 
 ---
 
-### Task 6: 端到端验证
+### Task 7: 端到端验证
 
-- [ ] **Step 1**：备份 `news/vocab.md`，然后运行一次完整抓取 `/opt/miniconda3/bin/python3 scripts/fetch_news.py`。确认日志里有「今日一课：…」，`news/<今天>/lesson.json` 已生成。
+- [ ] **Step 1**：备份 `user/vocab.md`，然后运行一次完整抓取 `/opt/miniconda3/bin/python3 scripts/fetch_news.py`。确认日志里有「今日一课：…」，`user/lessons/<今天>.json` 已生成。
 - [ ] **Step 2**：断网（或把 `QUERIES` 临时指向不存在的域名）再跑一次，确认新闻部分照旧报错，课程部分没有崩溃，`progress.json` 没有变化。
-- [ ] **Step 3**：在 `README` 里补充：每日一课的用法、`progress.json` 和 `grammar_syllabus.json` 的作用、怎样手动修改大纲。
+- [ ] **Step 3**：在 `README` 里补充：每日一课的用法、`user/` 目录（个人数据，不提交）和 `grammar_syllabus.json` 的作用、多人各自克隆使用的方式、怎样手动修改大纲。
 - [ ] **Step 4: Commit**：`docs: daily lesson usage`
