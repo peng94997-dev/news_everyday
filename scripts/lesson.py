@@ -465,3 +465,16 @@ else load(location.hash.slice(1));
 </body>
 </html>
 """
+
+
+def grammar_marks(syllabus, prog, days):
+    """{見出し: [学過の語法点]}。ニュース一覧の「学过」標記用（Claude は呼ばない）。"""
+    learned = [p for p in syllabus if p["id"] in prog["grammar"]]
+    marks = {}
+    for items in days.values():
+        for x in items:
+            got = [{"id": p["id"], "title": p["title"], "learned": prog["grammar"][p["id"]]["learned"], "hits": h}
+                   for p in learned if (h := match_point(p, x))]
+            if got:
+                marks[x["title"]] = got
+    return marks

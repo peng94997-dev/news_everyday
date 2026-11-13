@@ -36,7 +36,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from lesson import (LESSON_TEMPLATE, PROGRESS_NAME, USER_DIR, generate_today, lesson_view, load_progress,
-                    mark_done, migrate_user_data, next_review, review_point, save_progress)
+                    grammar_marks, load_syllabus, mark_done, migrate_user_data, next_review, review_point, save_progress)
 
 # ==========================================================================
 # 1. 収集・精選
@@ -590,7 +590,13 @@ def load(news_dir):
 
 def build(news_dir):
     days = load(news_dir)
-    data = json.dumps({"days": days, "sections": PAGE_SECTIONS}, ensure_ascii=False).replace("</", "<\\/")
+    try:
+        marks = grammar_marks(load_syllabus(), load_progress(USER_DIR / PROGRESS_NAME), days)
+    except ValueError as e:  # 進度・大綱が壊れていてもページは作る
+        print(f"警告：无法标记学过的语法点：{e}", file=sys.stderr)
+        marks = {}
+    data = json.dumps({"days": days, "sections": PAGE_SECTIONS, "marks": marks},
+                      ensure_ascii=False).replace("</", "<\\/")
     out = news_dir / "index.html"
     out.write_text(TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS).replace("/*__DATA__*/null", data))
     (news_dir / "vocab.html").write_text(VOCAB_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
@@ -646,6 +652,9 @@ textarea { font: inherit; color: var(--text); background: var(--surface); border
 .toast.show { opacity: 1; }
 .notice { background: var(--imm-soft); color: var(--text); border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-top: 16px; }
 .notice code { font-size: 12px; }
+u.lm { text-decoration: underline 2px #e0a800; text-underline-offset: 4px; }
+.lmtags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.lmtag { font-size: 11px; color: #8a6514; background: #f3ecd9; border-radius: 6px; padding: 0 6px; cursor: default; }
 rt { font-size: 10px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
 .lvb { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 6px;
   vertical-align: middle; letter-spacing: .02em; background: var(--chip); color: var(--muted); }
@@ -784,6 +793,7 @@ dialog .hint { font-size: 12px; color: var(--muted); min-height: 1em; margin-top
     </div>
     <div style="display:flex;gap:10px;align-items:center">
       <button class="navlink" id="fetchBtn" type="button" style="cursor:pointer;font:inherit;font-weight:600">🔄 抓取最新新闻</button>
+      <a class="navlink" href="lesson.html">今日一课 <span id="lstatus"></span></a>
       <a class="navlink" href="vocab.html">单词本 <span id="vcount"></span></a>
       <label class="sub">日期&nbsp;<select id="day"></select></label>
     </div>
@@ -849,8 +859,13 @@ const S = DATA.sections, days = Object.keys(DATA.days).sort().reverse();
 const state = { day: days[0], kind: "all", section: null, q: "" };
 const $ = s => document.querySelector(s);
 const esc = s => s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const ruby = (x, q) => (x.ruby || [[x.title, ""]]).map(([t, r]) =>
-  r ? `<ruby>${hl(t, q)}<rt>${esc(r)}</rt></ruby>` : hl(t, q)).join("");
+const ruby = (x, q, hits) => (x.ruby || [[x.title, ""]]).map(([t, r]) =>
+  r ? `<ruby>${ul(hl(t, q), hits)}<rt>${esc(r)}</rt></ruby>` : ul(hl(t, q), hits)).join("");
+// 学过的语法点所在的片段加下划线
+const ul = (h, hits) => (hits || []).reduce((s, w) => s.split(esc(w)).join(`<u class="lm">${esc(w)}</u>`), h);
+const MARKS = DATA.marks || {};
+const markTags = x => (MARKS[x.title] || []).map(m =>
+  `<span class="lmtag" title="${esc(m.learned)} 学过">学过 · ${esc(m.title)}</span>`).join("");
 const hl = (s, q) => { s = esc(s); if (!q) return s;
   const r = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"); return s.replace(r, m => `<mark>${m}</mark>`); };
 
@@ -877,7 +892,8 @@ function render() {
       <span class="cnt">${list.length} 条</span></h2>` +
       (list.length ? `<div class="grid">${list.map(x => `
         <article class="card" data-i="${items.indexOf(x)}">
-          <div class="t" lang="ja">${ruby(x, state.q.trim())}</div>
+          <div class="t" lang="ja">${ruby(x, state.q.trim(), (MARKS[x.title] || []).flatMap(m => m.hits))}</div>
+          ${MARKS[x.title] ? `<div class="lmtags">${markTags(x)}</div>` : ""}
           ${x.zh ? `<div class="zh">${hl(x.zh, state.q.trim())}</div>` : ""}
           <div class="tools"><button type="button" class="exbtn" aria-expanded="false">🧠 句子讲解</button>
             ${x.tokens && x.tokens.length ? `<button type="button" class="bdbtn" aria-expanded="false">🔍 逐词拆解</button>` : ""}</div>
@@ -983,7 +999,11 @@ const api = (path, opt) => fetch(path, opt).then(r => r.ok ? r.json() : r.text()
 const toast = msg => { const t = $("#toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 2200); };
 if (!SERVED) $("#fileNotice").hidden = false;
-else api("/api/vocab").then(d => $("#vcount").textContent = `(${d.words.length})`).catch(() => {});
+else {
+  api("/api/vocab").then(d => $("#vcount").textContent = `(${d.words.length})`).catch(() => {});
+  api("/api/lesson").then(d => $("#lstatus").textContent =
+    d.status.current ? "· 未读" : d.status.due ? `· 复习 ${d.status.due}` : "✓").catch(() => {});
+}
 
 // ---- 手动抓取 ----------------------------------------------------------
 async function pollFetch(first) {

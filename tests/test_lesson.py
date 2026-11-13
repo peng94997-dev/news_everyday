@@ -332,5 +332,19 @@ class ViewTest(TmpDirs):
         self.assertEqual(v["status"], {"current": None, "due": 0})
 
 
+class MarksTest(unittest.TestCase):
+    SYL = [pt("no", "の"), pt("ga", "が")]
+    DAYS = {"2026-11-14": [it("AAA の BBB が"), it("CCC")]}
+
+    def test_marks_only_learned_points(self):
+        prog = empty()
+        prog["grammar"]["no"] = {"learned": "2026-11-13", "level": 1, "due": "2026-11-14"}
+        marks = lesson.grammar_marks(self.SYL, prog, self.DAYS)
+        self.assertEqual(marks, {"AAA の BBB が": [{"id": "no", "title": "no", "learned": "2026-11-13", "hits": ["の"]}]})
+
+    def test_marks_empty_without_progress(self):
+        self.assertEqual(lesson.grammar_marks(self.SYL, empty(), self.DAYS), {})
+
+
 if __name__ == "__main__":
     unittest.main()
