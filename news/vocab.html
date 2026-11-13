@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>日语单词本</title>
+<style>
+
+:root {
+  --bg: #f6f5f1; --surface: #ffffff; --text: #1d1d1b; --muted: #6b6a65; --line: #e4e2dc;
+  --imm: #b4442e; --imm-soft: #f6e4df; --evt: #2b6a8f; --evt-soft: #e0edf4;
+  --chip: #efede7; --accent: #1d1d1b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --surface: #20201e; --text: #ecebe6; --muted: #9c9a93; --line: #34332f;
+    --imm: #e58a74; --imm-soft: #3a2620; --evt: #7fb6d6; --evt-soft: #1e2f3a;
+    --chip: #2b2a27; --accent: #ecebe6;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161615; --surface: #20201e; --text: #ecebe6; --muted: #9c9a93; --line: #34332f;
+  --imm: #e58a74; --imm-soft: #3a2620; --evt: #7fb6d6; --evt-soft: #1e2f3a;
+  --chip: #2b2a27; --accent: #ecebe6;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 32px 16px 64px; }
+header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px;
+  border-bottom: 2px solid var(--accent); padding-bottom: 16px; }
+h1 { font-size: 28px; margin: 0; letter-spacing: .02em; }
+.sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+select, input { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; }
+.chip { border: 1px solid var(--line); background: var(--chip); color: var(--text); border-radius: 999px;
+  padding: 6px 14px; font: inherit; font-size: 13px; cursor: pointer; }
+.chip[aria-pressed="true"] { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.empty { color: var(--muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
+mark { background: #f3d36b; color: #1d1d1b; border-radius: 2px; }
+footer { margin-top: 40px; color: var(--muted); font-size: 12px; }
+textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; width: 100%; resize: vertical; }
+.navlink { color: var(--text); font-size: 14px; font-weight: 600; text-decoration: none; border: 1px solid var(--line);
+  background: var(--surface); border-radius: 999px; padding: 6px 14px; white-space: nowrap; }
+.btn { font: inherit; font-size: 14px; border-radius: 8px; padding: 8px 16px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+.btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.btn.danger { color: var(--imm); }
+.btn:disabled { opacity: .45; cursor: default; }
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--accent); color: var(--bg);
+  padding: 10px 18px; border-radius: 999px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 30; }
+.toast.show { opacity: 1; }
+.notice { background: var(--imm-soft); color: var(--text); border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-top: 16px; }
+.notice code { font-size: 12px; }
+rt { font-size: 10px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+.lvb { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 6px;
+  vertical-align: middle; letter-spacing: .02em; background: var(--chip); color: var(--muted); }
+.lvb.N5 { background: #e3f1e4; color: #2f7a3a; } .lvb.N4 { background: #e0edf4; color: #2b6a8f; }
+.lvb.N3 { background: #f3ecd9; color: #8a6514; } .lvb.N2 { background: #f6e4df; color: #b4442e; }
+.lvb.N1 { background: #ece3f3; color: #6d3f91; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .lvb { filter: brightness(.75) saturate(1.2); } }
+:root[data-theme="dark"] .lvb { filter: brightness(.75) saturate(1.2); }
+
+.tabs { display: flex; gap: 8px; margin: 24px 0 20px; flex-wrap: wrap; align-items: center; }
+.tabs .meta { margin-left: auto; color: var(--muted); font-size: 13px; }
+.flash { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 32px 24px;
+  text-align: center; max-width: 640px; margin: 0 auto; }
+.flash .progress { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+.flash .front { font-size: 44px; font-weight: 700; line-height: 1.3; word-break: break-all; }
+.flash .kana { font-size: 20px; color: var(--evt); margin-top: 8px; }
+.flash .zh { font-size: 20px; margin-top: 10px; font-weight: 600; }
+.flash .sent { text-align: left; background: var(--chip); border-radius: 10px; padding: 12px 14px; margin-top: 20px;
+  line-height: 2.1; font-size: 15px; }
+.flash .sent .szh { line-height: 1.6; color: var(--muted); font-size: 13px; margin-top: 4px; }
+.flash .src { font-size: 12px; color: var(--muted); margin-top: 10px; text-align: left; }
+.flash .src a { color: var(--muted); }
+.flash .actions { display: flex; justify-content: center; gap: 10px; margin-top: 24px; flex-wrap: wrap; }
+.flash .actions .btn { min-width: 96px; }
+b.hit { background: #f3d36b; color: #1d1d1b; border-radius: 2px; font-weight: inherit; }
+.say { border: 0; background: none; cursor: pointer; font-size: 20px; vertical-align: middle; color: var(--muted); }
+.say:hover { color: var(--text); }
+.list { display: grid; gap: 10px; }
+.item { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+  display: grid; grid-template-columns: minmax(120px, 200px) 1fr auto; gap: 14px; align-items: start; }
+.item .w { font-size: 22px; font-weight: 700; line-height: 1.2; word-break: break-all; }
+.item .k { color: var(--evt); font-size: 14px; margin-top: 4px; }
+.item .z { font-weight: 600; }
+.item .s { font-size: 13px; color: var(--muted); margin-top: 4px; }
+.item .lv { font-size: 12px; color: var(--muted); margin-top: 6px; }
+.item .ops { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.dots { letter-spacing: 2px; color: var(--evt); }
+.lvbar { display: flex; gap: 6px; flex-wrap: wrap; margin: -8px 0 20px; }
+.lvbar .chip { font-size: 12px; padding: 4px 12px; }
+.flash .pos { font-size: 12px; color: var(--muted); margin-left: 6px; }
+.flash .sent .lbl { font-size: 11px; color: var(--muted); line-height: 1.4; }
+.auto { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 0 5px; margin-left: 4px; }
+@media (max-width: 720px) {
+  .item { grid-template-columns: 1fr; }
+  .item .ops { flex-direction: row; justify-content: flex-end; }
+  .flash .front { font-size: 34px; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>日语单词本</h1>
+      <div class="sub">数据保存在 news/vocab.md ・ 按遗忘曲线安排复习 ・ 每次抓取新闻时自动加入其中的 N5、N4 单词</div>
+    </div>
+    <a class="navlink" href="index.html">← 返回新闻</a>
+  </header>
+  <div class="notice" id="fileNotice" hidden>单词本需要本地服务读取 vocab.md，请运行
+    <code>python3 scripts/fetch_news.py --serve</code>，然后访问 <code>http://localhost:8765/vocab.html</code></div>
+
+  <div class="tabs">
+    <button class="chip" data-tab="review" aria-pressed="true">今日复习</button>
+    <button class="chip" data-tab="list" aria-pressed="false">全部单词</button>
+    <span class="meta" id="meta"></span>
+  </div>
+  <div class="lvbar" id="lvbar"></div>
+
+  <main id="view"></main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const api = (path, opt) => fetch(path, opt).then(r => r.ok ? r.json() : r.text().then(t => Promise.reject(new Error(t))));
+const toast = msg => { const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 2000); };
+const LEVELS = 7;
+let words = [], today = "", tab = "review", queue = [], pos = 0, revealed = false, lv = "all";
+const LV = ["N5", "N4", "N3", "N2", "N1", "级外"];
+try { lv = localStorage.getItem("vocab-lv") || "all"; } catch (e) {}
+const inLv = w => lv === "all" || (w.jlpt || "级外") === lv;
+const badge = w => `<span class="lvb ${esc(w.jlpt || "")}">${esc(w.jlpt || "级外")}</span>`;
+
+function say(text) {
+  if (!("speechSynthesis" in window)) return toast("当前浏览器不支持朗读");
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text); u.lang = "ja-JP"; u.rate = 0.85;
+  speechSynthesis.speak(u);
+}
+// 例句：带注音，并高亮当前单词
+function sentenceHtml(w, key = "sentence") {
+  const segs = w[key + "_ruby"] && w[key + "_ruby"].length ? w[key + "_ruby"] : [[w[key] || "", ""]];
+  const full = segs.map(s => s[0]).join(""), at = full.indexOf(w.word), end = at + w.word.length;
+  let i = 0;
+  return segs.map(([t, r]) => {
+    const a = i; i += t.length;
+    if (at < 0 || a >= end || i <= at) return r ? `<ruby>${esc(t)}<rt>${esc(r)}</rt></ruby>` : esc(t);
+    if (r) return `<b class="hit"><ruby>${esc(t)}<rt>${esc(r)}</rt></ruby></b>`;
+    const s0 = Math.max(at - a, 0), s1 = Math.min(end - a, t.length);  // 假名段只高亮重叠部分
+    return esc(t.slice(0, s0)) + `<b class="hit">${esc(t.slice(s0, s1))}</b>` + esc(t.slice(s1));
+  }).join("");
+}
+const dots = lv => "●".repeat(lv) + "○".repeat(Math.max(0, LEVELS - lv));
+
+async function load() {
+  const d = await api("/api/vocab");
+  words = d.words; today = d.today;
+  const scope = words.filter(inLv), due = scope.filter(w => !w.due || w.due <= today);
+  $("#meta").textContent = `${lv === "all" ? "共" : lv + "："} ${scope.length} 个单词 ・ 今日待复习 ${due.length} 个`;
+  const cnt = k => words.filter(w => (w.jlpt || "级外") === k).length;
+  $("#lvbar").innerHTML = `<button class="chip" data-lv="all" aria-pressed="${lv === "all"}">全部等级 ${words.length}</button>` +
+    LV.filter(k => cnt(k)).map(k => `<button class="chip" data-lv="${k}" aria-pressed="${lv === k}">${k} ${cnt(k)}</button>`).join("");
+}
+function startReview(all) {
+  const due = words.filter(w => inLv(w) && (all || !w.due || w.due <= today));
+  queue = due.sort(() => Math.random() - 0.5); pos = 0; revealed = false;
+  render();
+}
+
+function renderReview() {
+  if (!words.length) return `<div class="empty">单词本还是空的。去 <a href="index.html">新闻页面</a> 选中日文词语，点「加入单词本」吧。</div>`;
+  if (pos >= queue.length) return `<div class="flash"><div class="front" style="font-size:28px">🎉 今天的复习完成了</div>
+      <div class="actions"><button class="btn" id="again">再随机复习全部单词</button></div></div>`;
+  const w = queue[pos];
+  return `<div class="flash">
+    <div class="progress">${pos + 1} / ${queue.length} ・ 熟练度 <span class="dots">${dots(w.level)}</span></div>
+    <div>${badge(w)}${w.origin === "自动" ? '<span class="auto">自动</span>' : ""}</div>
+    <div class="front" lang="ja">${esc(w.word)} <button class="say" data-say="${esc(w.kana || w.word)}" title="朗读">🔊</button></div>
+    ${revealed ? `
+      <div class="kana" lang="ja">${esc(w.kana)}${w.pos ? `<span class="pos">${esc(w.pos)}</span>` : ""}</div>
+      <div class="zh">${esc(w.zh) || "（未填写释义）"}</div>
+      ${w.ex ? `<div class="sent"><div class="lbl">词典例句</div><div lang="ja">${sentenceHtml(w, "ex")}
+        <button class="say" data-say="${esc(w.ex)}" title="朗读例句">🔊</button></div>
+        ${w.ex_zh ? `<div class="szh">${esc(w.ex_zh)}</div>` : ""}</div>` : ""}
+      ${w.sentence ? `<div class="sent"><div class="lbl">新闻原句</div><div lang="ja">${sentenceHtml(w)}
+        <button class="say" data-say="${esc(w.sentence)}" title="朗读例句">🔊</button></div>
+        ${w.sentence_zh ? `<div class="szh">${esc(w.sentence_zh)}</div>` : ""}</div>` : ""}
+      ${w.source ? `<div class="src">出处：${w.link ? `<a href="${esc(w.link)}" target="_blank" rel="noopener">${esc(w.source)}</a>` : esc(w.source)}</div>` : ""}
+      <div class="actions">
+        <button class="btn" data-grade="0">不认识</button>
+        <button class="btn" data-grade="1">模糊</button>
+        <button class="btn primary" data-grade="2">认识</button>
+      </div>` : `
+      <div class="actions"><button class="btn primary" id="reveal">显示答案（空格键）</button></div>`}
+  </div>`;
+}
+
+function renderList() {
+  if (!words.length) return `<div class="empty">单词本还是空的。</div>`;
+  const order = w => LV.indexOf(w.jlpt || "级外");
+  const sorted = words.filter(inLv).sort((a, b) => order(a) - order(b) || (b.added || "").localeCompare(a.added || ""));
+  if (!sorted.length) return `<div class="empty">这个等级还没有单词</div>`;
+  return `<div class="list">${sorted.map(w => `
+    <div class="item">
+      <div><div class="w" lang="ja">${esc(w.word)}</div><div class="k" lang="ja">${esc(w.kana)}</div>
+        <div style="margin-top:6px">${badge(w)}${w.origin === "自动" ? '<span class="auto">自动</span>' : ""}</div></div>
+      <div><div class="z">${esc(w.zh) || "（未填写释义）"}</div>
+        ${w.sentence ? `<div class="s" lang="ja">${esc(w.sentence)}</div>` : ""}
+        <div class="lv">熟练度 <span class="dots">${dots(w.level)}</span> ・ 下次复习 ${esc(w.due || "-")} ・ 添加于 ${esc(w.added || "-")}</div></div>
+      <div class="ops">
+        <button class="say" data-say="${esc(w.kana || w.word)}" title="朗读">🔊</button>
+        <button class="btn danger" data-del="${esc(w.word)}">删除</button>
+      </div>
+    </div>`).join("")}</div>`;
+}
+
+function render() {
+  $("#view").innerHTML = tab === "review" ? renderReview() : renderList();
+}
+
+$("#view").onclick = async e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.say) return say(b.dataset.say);
+  if (b.id === "reveal") { revealed = true; return render(); }
+  if (b.id === "again") return startReview(true);
+  if (b.dataset.grade) {
+    const w = queue[pos], grade = +b.dataset.grade;
+    try { await api("/api/review", { method: "POST", body: JSON.stringify({ word: w.word, grade }) }); }
+    catch (err) { return toast("保存失败：" + err.message); }
+    if (grade === 0) queue.push(w);  // 不认识的词本轮稍后再出现一次
+    pos++; revealed = false;
+    await load(); render(); return;
+  }
+  if (b.dataset.del) {
+    if (!confirm(`从单词本中删除「${b.dataset.del}」？\n（删除后，以后抓取新闻时也不会再自动加入这个词）`)) return;
+    try { await api("/api/vocab?word=" + encodeURIComponent(b.dataset.del), { method: "DELETE" }); }
+    catch (err) { return toast("删除失败：" + err.message); }
+    toast(`已删除「${b.dataset.del}」`);
+    queue = queue.filter(w => w.word !== b.dataset.del);
+    await load(); render();
+  }
+};
+$("#lvbar").onclick = async e => {
+  const b = e.target.closest("[data-lv]"); if (!b) return;
+  lv = b.dataset.lv; try { localStorage.setItem("vocab-lv", lv); } catch (err) {}
+  await load(); startReview(false);
+};
+document.querySelectorAll(".tabs .chip").forEach(b => b.onclick = () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll(".tabs .chip").forEach(c => c.setAttribute("aria-pressed", c === b));
+  render();
+});
+document.addEventListener("keydown", e => {
+  if (tab !== "review" || e.target.closest("input, textarea")) return;
+  if (e.code === "Space" && !revealed && pos < queue.length) { e.preventDefault(); revealed = true; render(); }
+  else if (revealed && ["Digit1", "Digit2", "Digit3"].includes(e.code))
+    document.querySelector(`[data-grade="${e.code.slice(-1) - 1}"]`)?.click();
+});
+
+if (!location.protocol.startsWith("http")) {
+  $("#fileNotice").hidden = false;
+  $("#view").innerHTML = `<div class="empty">请通过本地服务打开此页面</div>`;
+} else {
+  load().then(() => startReview(false)).catch(e => $("#view").innerHTML = `<div class="empty">读取失败：${esc(e.message)}</div>`);
+}
+</script>
+</body>
+</html>
