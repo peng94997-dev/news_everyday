@@ -2,7 +2,7 @@
 
 fetch_news.py から呼ばれる。このモジュールは fetch_news を import しない（循環を避ける）。
 """
-import json, re, subprocess
+import contextlib, json, re, subprocess
 from datetime import timedelta
 from pathlib import Path
 
@@ -21,6 +21,18 @@ def load_syllabus(path=SYLLABUS_PATH):
             raise ValueError(f"语法大纲第 {i + 1} 项（{p.get('id', '?')}）缺少字段：{', '.join(missing)}")
         if p["id"] in seen:
             raise ValueError(f"语法大纲里 id 重复：{p['id']}")
+        if not isinstance(p["match"], list):
+            raise ValueError(f"语法大纲 {p['id']} 的 match 必须是规则列表")
+        for rule in p["match"]:
+            ok = isinstance(rule, dict) and (isinstance(rule.get("token"), dict) or isinstance(rule.get("note"), str)
+                                             or isinstance(rule.get("regex"), str))
+            if not ok:
+                raise ValueError(f"语法大纲 {p['id']} 的规则写法不对：{rule}")
+            if "regex" in rule:
+                try:
+                    re.compile(rule["regex"])
+                except re.error as e:
+                    raise ValueError(f"语法大纲 {p['id']} 的正则有误：{rule['regex']}（{e}）") from e
         seen.add(p["id"])
     return pts
 
@@ -257,7 +269,7 @@ def _ruby(ruby_fn, text):
 
 
 def generate_today(news_dir, user_dir, today, vocab_words, ask=call_claude, ruby_fn=lambda s: [], log=print,
-                   syllabus=None):
+                   syllabus=None, lock=None):
     """今日の課を生成して user_dir/lessons/<today>.json に保存する。生成しなかったら None。"""
     user_dir, d = Path(user_dir), today.isoformat()
     path = user_dir / "lessons" / f"{d}.json"
@@ -290,10 +302,16 @@ def generate_today(news_dir, user_dir, today, vocab_words, ask=call_claude, ruby
         return None
     obj.update(date=d, kind=kind, model=LESSON_MODEL, ruby=[_ruby(ruby_fn, r["text"]) for r in obj["main"]["reading"]])
     obj.update(point_id=plan.get("point"), point_ids=plan.get("points", []))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=1))
-    prog["lessons"][d] = {"kind": kind, "point": plan.get("point"), "points": plan.get("points", []), "done": False}
-    save_progress(prog_path, prog)
+    # Claude を待つ間に他のリクエストが進度や課を書いたかもしれないので、読み直してから書く
+    with lock or contextlib.nullcontext():
+        if path.exists():
+            return json.loads(path.read_text())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(obj, ensure_ascii=False, indent=1))
+        prog = load_progress(prog_path)
+        prog["lessons"][d] = {"kind": kind, "point": plan.get("point"), "points": plan.get("points", []),
+                              "done": False}
+        save_progress(prog_path, prog)
     return obj
 
 
@@ -317,6 +335,7 @@ def lesson_view(news_dir, user_dir, date, today, syllabus=None):
             "done": bool(date and prog["lessons"].get(date, {}).get("done")),
             "review": review_examples(syllabus, prog, today_items(news_dir, today), today),
             "history": history,
+            "can_generate": not cur and today.isoformat() not in files,  # 「生成今天的课」を出すか
             "status": {"current": cur, "due": len(due_points(prog, syllabus, today))}}
 
 
@@ -414,8 +433,11 @@ function render() {
   if (L.quiz) h += `<section><h2>⑥ 小测验</h2><div class="ex"><div class="t">${esc(L.quiz.title)}</div></div>
     <p>${esc(L.quiz.question)}</p><details class="ans"><summary>看答案</summary><p>${esc(L.quiz.answer)}</p></details></section>`;
   h += `<div class="done-bar"><button class="btn primary" id="done" ${V.done ? "disabled" : ""}>${V.done ? "已学完 ✓" : "学完了"}</button></div>`;
+  if (V.can_generate) h = `<section><div class="empty">今天的课还没有生成。<br><br>
+    <button class="btn primary" id="gen">生成今天的课</button></div></section>` + h;
   h += histHtml();
   m.innerHTML = h;
+  if ($("#gen")) $("#gen").onclick = generate;
   $("#done").onclick = async () => {
     try { V = await post("/api/lesson/done", { date: L.date }); toast("记下了，明天会提醒你复习"); render(); }
     catch (e) { toast("保存失败：" + e.message); }

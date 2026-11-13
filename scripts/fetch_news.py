@@ -1385,7 +1385,8 @@ def serve(news_dir, port):
                     msgs = []
                     with _vocab_lock:
                         words = vocab_load(vocab_path)[0]
-                    les = generate_today(news_dir, USER_DIR, today, words, ruby_fn=furigana, log=msgs.append)
+                    les = generate_today(news_dir, USER_DIR, today, words, ruby_fn=furigana, log=msgs.append,
+                                         lock=_vocab_lock)
                     if not les:
                         return self._json({"error": msgs[-1] if msgs else "没有生成课程"}, 500)
                     with _vocab_lock:
@@ -1680,7 +1681,8 @@ def run_fetch(news_dir, log=print):
     n_auto = auto_add_vocab(picked, VOCAB_PATH)
     log(f"③ 已保存 {outdir / (stem + '.md')}；单词本自动加入 {'/'.join(AUTO_LEVELS)} 单词 {n_auto} 个")
     try:
-        les = generate_today(news_dir, USER_DIR, now.date(), vocab_load(VOCAB_PATH)[0], ruby_fn=furigana, log=log)
+        les = generate_today(news_dir, USER_DIR, now.date(), vocab_load(VOCAB_PATH)[0], ruby_fn=furigana, log=log,
+                             lock=_vocab_lock)
         if les:
             log(f"   今日一课：{les['main']['title']}")
     except Exception as e:  # 課程の失敗でニュースの出力を止めない

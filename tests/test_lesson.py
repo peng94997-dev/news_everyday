@@ -39,6 +39,15 @@ class MatchTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 lesson.load_syllabus(p)
 
+    def test_load_syllabus_rejects_bad_rules(self):
+        bad_rules = [[{"regex": "の("}], "の", [{"unknown": 1}], [{"token": "の"}]]
+        for rules in bad_rules:
+            with tempfile.TemporaryDirectory() as d:
+                p = Path(d) / "s.json"
+                p.write_text(json.dumps([{"id": "a", "level": "N5", "title": "t", "brief": "b", "match": rules}]))
+                with self.assertRaises(ValueError, msg=repr(rules)):
+                    lesson.load_syllabus(p)
+
     def test_real_syllabus_is_valid(self):
         pts = lesson.load_syllabus()
         self.assertGreaterEqual(len(pts), 60)
@@ -248,6 +257,32 @@ class GenerateTest(TmpDirs):
                                     log=lambda m: None, syllabus=self.SYL)
         self.assertEqual(out["ruby"][0], [["AAA", "r"], [" ", ""]])
 
+    def test_generate_keeps_progress_written_meanwhile(self):
+        prog_path = self.user / "progress.json"
+
+        def ask(prompt):  # Claude を待つ間に別のリクエストが復習結果を保存した
+            prog = lesson.load_progress(prog_path)
+            prog["grammar"]["ga"] = {"learned": "2026-11-10", "level": 3, "due": "2026-11-20"}
+            lesson.save_progress(prog_path, prog)
+            return GOOD
+
+        lesson.generate_today(self.news, self.user, TODAY, [], ask=ask, log=lambda m: None, syllabus=self.SYL)
+        prog = lesson.load_progress(prog_path)
+        self.assertEqual(prog["grammar"]["ga"]["level"], 3)
+        self.assertIn("2026-11-14", prog["lessons"])
+
+    def test_generate_does_not_overwrite_lesson_written_meanwhile(self):
+        path = self.user / "lessons" / "2026-11-14.json"
+
+        def ask(prompt):  # 同時に走った別の生成が先に書き終えた
+            path.write_text(json.dumps(dict(GOOD, date="2026-11-14", winner=True)))
+            return GOOD
+
+        out = lesson.generate_today(self.news, self.user, TODAY, [], ask=ask, log=lambda m: None,
+                                    syllabus=self.SYL)
+        self.assertTrue(out.get("winner"))
+        self.assertTrue(json.loads(path.read_text()).get("winner"))
+
     def test_generate_idempotent(self):
         stub = Stub(GOOD)
         self.gen(stub)
@@ -324,12 +359,25 @@ class ViewTest(TmpDirs):
         self.assertEqual([x["date"] for x in h], ["2026-11-13", "2026-11-12"])
         self.assertEqual(h[0]["title"], "AAA の BBB")
 
+    def test_lesson_view_can_generate_after_old_lesson_done(self):
+        self.write("2026-11-13", True)  # 昨日の課は学完了、今日の課はまだ無い
+        v = self.view()
+        self.assertEqual(v["date"], "2026-11-13")
+        self.assertTrue(v["can_generate"])
+        self.write("2026-11-14", True)
+        self.assertFalse(self.view()["can_generate"])
+
+    def test_lesson_view_cannot_generate_while_open(self):
+        self.write("2026-11-13", False)
+        self.assertFalse(self.view()["can_generate"])
+
     def test_lesson_view_empty(self):
         v = self.view()
         self.assertIsNone(v["lesson"])
         self.assertIsNone(v["date"])
         self.assertEqual(v["history"], [])
         self.assertEqual(v["status"], {"current": None, "due": 0})
+        self.assertTrue(v["can_generate"])
 
 
 class MarksTest(unittest.TestCase):
