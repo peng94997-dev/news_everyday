@@ -4,3 +4,5 @@ __pycache__/
 logs/
 # 第三方 JLPT 辞书（CC BY-NC），首次运行时自动下载
 data/jlpt_vocab.json
+user/
+news/

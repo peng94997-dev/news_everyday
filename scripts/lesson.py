@@ -36,3 +36,16 @@ def match_point(point, item):
         elif "regex" in rule:
             hits += [m.group(0) for m in re.finditer(rule["regex"], item["title"])]
     return list(dict.fromkeys(hits))
+
+
+USER_DIR = ROOT / "user"  # 個人データ（進度・単語帳・自分の課程）。git には入れない
+
+
+def migrate_user_data(news_dir, user_dir):
+    """user_dir を用意し、旧 news/vocab.md を user_dir へ移す（上書きはしない）。移したら True。"""
+    (Path(user_dir) / "lessons").mkdir(parents=True, exist_ok=True)
+    old, new = Path(news_dir) / "vocab.md", Path(user_dir) / "vocab.md"
+    if old.exists() and not new.exists():
+        old.rename(new)
+        return True
+    return False

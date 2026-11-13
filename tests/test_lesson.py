@@ -44,5 +44,27 @@ class MatchTest(unittest.TestCase):
         self.assertLessEqual(len(pts), 80)
 
 
+class MigrateTest(unittest.TestCase):
+    def test_migrate_moves_vocab(self):
+        with tempfile.TemporaryDirectory() as d:
+            news, user = Path(d) / "news", Path(d) / "user"
+            news.mkdir()
+            (news / "vocab.md").write_text("# 单词本\n## 東京\n")
+            self.assertTrue(lesson.migrate_user_data(news, user))
+            self.assertFalse((news / "vocab.md").exists())
+            self.assertEqual((user / "vocab.md").read_text(), "# 单词本\n## 東京\n")
+            self.assertTrue((user / "lessons").is_dir())
+
+    def test_migrate_never_overwrites(self):
+        with tempfile.TemporaryDirectory() as d:
+            news, user = Path(d) / "news", Path(d) / "user"
+            news.mkdir(); user.mkdir()
+            (news / "vocab.md").write_text("old")
+            (user / "vocab.md").write_text("mine")
+            self.assertFalse(lesson.migrate_user_data(news, user))
+            self.assertEqual((news / "vocab.md").read_text(), "old")
+            self.assertEqual((user / "vocab.md").read_text(), "mine")
+
+
 if __name__ == "__main__":
     unittest.main()

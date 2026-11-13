@@ -21,7 +21,7 @@
     news/explanations.json                      見出しの構造解説キャッシュ（claude CLI で生成）
     news/index.html                             閲覧用ページ（見出しの語を選択して単語帳に追加）
     news/vocab.html                             単語帳の暗記ページ
-    news/vocab.md                               単語帳（Markdown、手で編集しても可）
+    user/vocab.md                               単語帳（Markdown、手で編集しても可。個人データ・git 対象外）
     data/jlpt_vocab.json                        JLPT 語彙辞書（初回に自動ダウンロード）
 
 単語帳: 収集のたびに見出し中の N5・N4 単語を自動追加する。各単語には JLPT 等級を付ける。
@@ -34,6 +34,8 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from lesson import USER_DIR, migrate_user_data
 
 # ==========================================================================
 # 1. 収集・精選
@@ -1101,6 +1103,7 @@ _vocab_lock = threading.Lock()
 # ---- JLPT 辞書 ----------------------------------------------------------
 JLPT_URL = "https://raw.githubusercontent.com/5mdld/anki-jlpt-decks/HEAD/deck-source/notes.csv"
 JLPT_PATH = ROOT / "data" / "jlpt_vocab.json"
+VOCAB_PATH = USER_DIR / "vocab.md"
 JLPT_LEVELS = ["N5", "N4", "N3", "N2", "N1"]
 _jlpt = None
 
@@ -1242,7 +1245,7 @@ def today_jst():
 
 
 def serve(news_dir, port):
-    vocab_path = news_dir / "vocab.md"
+    vocab_path = VOCAB_PATH
     cache_path = news_dir / "translations_zh.json"
     job = {"running": False, "log": [], "started": None, "finished": None, "result": None, "error": None}
 
@@ -1619,7 +1622,7 @@ def run_fetch(news_dir, log=print):
     (outdir / "raw_candidates.json").write_text(json.dumps(raw, ensure_ascii=False, indent=1))
     (outdir / f"{stem}.json").write_text(json.dumps(picked, ensure_ascii=False, indent=1))
     (outdir / f"{stem}.md").write_text(render(picked, now, since))
-    n_auto = auto_add_vocab(picked, news_dir / "vocab.md")
+    n_auto = auto_add_vocab(picked, VOCAB_PATH)
     log(f"③ 已保存 {outdir / (stem + '.md')}；单词本自动加入 {'/'.join(AUTO_LEVELS)} 单词 {n_auto} 个")
     page, n = build(news_dir)
     log(f"④ 页面已更新（共 {n} 天）")
@@ -1640,6 +1643,7 @@ def main():
     args = ap.parse_args()
     news_dir = Path(args.out)
     news_dir.mkdir(parents=True, exist_ok=True)
+    migrate_user_data(news_dir, USER_DIR)
 
     missing = [m for m in ("pykakasi", "janome") if not _importable(m)]
     if missing:  # 無いと注音・逐語解析が黙って空になるので、ここで止める
