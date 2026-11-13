@@ -197,9 +197,10 @@ class LessonOutputError(RuntimeError):
         self.raw = raw
 
 
-def parse_lesson_json(text, max_fixes=20):
-    """出力から JSON オブジェクトを取り出す。中文の引用に使われた未エスケープの " は “” に直して読み直す。"""
-    m = re.search(r"\{.*\}", text, re.S)
+def parse_lesson_json(text, max_fixes=20, array=False):
+    """出力から JSON オブジェクト（array=True なら配列）を取り出す。
+    中文の引用に使われた未エスケープの " は “” に直して読み直す。"""
+    m = re.search(r"\[.*\]" if array else r"\{.*\}", text, re.S)
     if not m:
         raise LessonOutputError("Claude 的输出里没有 JSON", raw=text)
     s = m.group(0)

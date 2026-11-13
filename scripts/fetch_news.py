@@ -36,7 +36,8 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from lesson import (LESSON_TEMPLATE, PROGRESS_NAME, USER_DIR, generate_today, lesson_view, load_progress,
-                    grammar_marks, load_syllabus, mark_done, migrate_user_data, next_review, review_point, save_progress)
+                    grammar_marks, load_syllabus, mark_done, migrate_user_data, next_review, parse_lesson_json,
+                    review_point, save_progress)
 
 # ==========================================================================
 # 1. 収集・精選
@@ -319,10 +320,9 @@ def _via_claude_cli(titles):
               + json.dumps(titles, ensure_ascii=False))
     r = subprocess.run(["claude", "-p", "--model", "haiku", prompt],
                        capture_output=True, text=True, timeout=300)
-    m = re.search(r"\[.*\]", r.stdout, re.S)
-    if r.returncode or not m:
+    if r.returncode:
         raise RuntimeError((r.stdout + r.stderr).strip()[:200])
-    out = json.loads(m.group(0))
+    out = parse_lesson_json(r.stdout, array=True)  # 未エスケープの " を直してから読む
     if len(out) != len(titles):
         raise RuntimeError("件数が一致しません")
     return dict(zip(titles, out))
@@ -348,6 +348,7 @@ def translate(titles, cache_path):
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     todo = [t for t in dict.fromkeys(titles) if t not in cache]
     if todo:
+        print(f"正在翻译 {len(todo)} 条标题…", file=sys.stderr, flush=True)
         for name, fn in (("claude CLI", _via_claude_cli), ("MyMemory", _via_mymemory)):
             if fn is _via_claude_cli and not _cli_ok:
                 continue
@@ -517,10 +518,9 @@ EXPLAIN_PROMPT = """你是日语老师，学生是只学完五十音的中国人
 
 def _claude_json(prompt, timeout=600):
     r = subprocess.run(["claude", "-p", "--model", "haiku", prompt], capture_output=True, text=True, timeout=timeout)
-    m = re.search(r"\[.*\]", r.stdout, re.S)
-    if r.returncode or not m:
+    if r.returncode:
         raise RuntimeError((r.stdout + r.stderr).strip()[:200])
-    return json.loads(m.group(0))
+    return parse_lesson_json(r.stdout, array=True)  # 未エスケープの " を直してから読む
 
 
 def explain_items(items, path, batch=8):
@@ -528,6 +528,8 @@ def explain_items(items, path, batch=8):
     global _cli_ok
     cache = json.loads(path.read_text()) if path.exists() else {}
     todo = [t for t in dict.fromkeys(x["title"] for x in items) if t not in cache]
+    if todo and _cli_ok:
+        print(f"正在生成句子讲解 {len(todo)} 条（claude CLI，每批 {batch} 条）…", file=sys.stderr, flush=True)
     for i in range(0, len(todo), batch):
         if not _cli_ok:
             break
@@ -537,7 +539,7 @@ def explain_items(items, path, batch=8):
             got = {t: e for t, e in zip(chunk, out) if isinstance(e, dict) and e.get("gist") and e.get("chunks")}
             cache.update(got)
             path.write_text(json.dumps(cache, ensure_ascii=False, indent=1))
-            print(f"句子讲解 {len(got)} 件（claude CLI）", file=sys.stderr)
+            print(f"句子讲解 {min(i + batch, len(todo))}/{len(todo)}（本批成功 {len(got)} 条）", file=sys.stderr, flush=True)
         except Exception as e:
             print(f"句子讲解の生成に失敗（claude CLI）: {e}", file=sys.stderr)
             _cli_ok = False
@@ -1722,6 +1724,7 @@ def main():
     if not (args.page_only or args.serve):
         run_fetch(news_dir)
     else:
+        print("正在生成页面（新标题需要补全翻译和讲解时，可能要几分钟）…", file=sys.stderr, flush=True)
         page, n = build(news_dir)
         print(f"ページ更新（{n} 日分）: {page}")
     if args.serve:

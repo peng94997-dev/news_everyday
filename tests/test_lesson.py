@@ -402,6 +402,10 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(obj["main"]["why"], "「の」连起来，表示“外国人滞在者的全面检测”——说明对象。")
         self.assertEqual(obj["main"]["x"], 1)
 
+    def test_parse_array_with_unescaped_quotes(self):
+        raw = '[{"gist": "表示"开幕"的意思", "chunks": []}]'
+        self.assertEqual(lesson.parse_lesson_json(raw, array=True), [{"gist": "表示“开幕”的意思", "chunks": []}])
+
     def test_parse_plain_json(self):
         self.assertEqual(lesson.parse_lesson_json('前置き {"a": "b"} 後書き'), {"a": "b"})
 
