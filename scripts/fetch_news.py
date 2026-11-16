@@ -35,6 +35,7 @@ from email.utils import parsedate_to_datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from analyze import ANALYZE_TEMPLATE, PATTERNS_PATH, analyze_text
 from lesson import (LESSON_TEMPLATE, PROGRESS_NAME, USER_DIR, generate_today, lesson_view, load_progress,
                     grammar_marks, load_syllabus, mark_done, migrate_user_data, next_review, parse_lesson_json,
                     review_point, save_progress)
@@ -612,6 +613,7 @@ def build(news_dir):
     out.write_text(TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS).replace("/*__DATA__*/null", data))
     (news_dir / "vocab.html").write_text(VOCAB_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
     (news_dir / "lesson.html").write_text(LESSON_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
+    (news_dir / "analyze.html").write_text(ANALYZE_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
     return out, len(days)
 
 
@@ -805,6 +807,7 @@ dialog .hint { font-size: 12px; color: var(--muted); min-height: 1em; margin-top
     <div style="display:flex;gap:10px;align-items:center">
       <button class="navlink" id="fetchBtn" type="button" style="cursor:pointer;font:inherit;font-weight:600">🔄 抓取最新新闻</button>
       <a class="navlink" href="lesson.html">今日一课 <span id="lstatus"></span></a>
+      <a class="navlink" href="analyze.html">句子解析</a>
       <a class="navlink" href="vocab.html">单词本 <span id="vcount"></span></a>
       <label class="sub">日期&nbsp;<select id="day"></select></label>
     </div>
@@ -1375,6 +1378,8 @@ def make_server(news_dir, port):
                 return self._json({"error": "bad json"}, 400)
             if path.startswith(("/api/lesson/", "/api/grammar/")):
                 return self._lesson_post(path, data)
+            if path == "/api/analyze":
+                return self._analyze(data)
             word = str(data.get("word", "")).strip()
             if not word:
                 return self._json({"error": "word is required"}, 400)
@@ -1407,6 +1412,19 @@ def make_server(news_dir, port):
                     return self._json({"error": "not found"}, 404)
                 vocab_save(vocab_path, words, ignored)
             return self._json({"ok": True, "count": len(words)})
+
+        def _analyze(self, data):
+            """句子解析：janome と規則だけ（AI・ネットワーク翻訳は使わない）。"""
+            try:
+                learned = set(load_progress(USER_DIR / PROGRESS_NAME)["grammar"])
+            except ValueError as e:  # 進度が壊れていても解析はできる
+                print(f"{datetime.now(JST):%H:%M:%S} 警告：读取学习进度失败，学过标记为空：{e}", file=sys.stderr, flush=True)
+                learned = set()
+            try:
+                return self._json(analyze_text(str(data.get("text", "")), lambda s: tokenize(s, headline=False),
+                                               furigana, load_syllabus(PATTERNS_PATH), load_syllabus(), learned))
+            except ValueError as e:
+                return self._json({"error": str(e)}, 400)
 
         def _lesson_post(self, path, data):
             prog_path, today = USER_DIR / PROGRESS_NAME, today_jst()
@@ -1523,7 +1541,8 @@ b.hit { background: #f3d36b; color: #1d1d1b; border-radius: 2px; font-weight: in
       <h1>日语单词本</h1>
       <div class="sub">数据保存在 news/vocab.md ・ 按遗忘曲线安排复习 ・ 每次抓取新闻时自动加入其中的 N5、N4 单词</div>
     </div>
-    <a class="navlink" href="index.html">← 返回新闻</a>
+    <div style="display:flex;gap:10px;flex-wrap:wrap"><a class="navlink" href="index.html">← 返回新闻</a>
+      <a class="navlink" href="analyze.html">句子解析</a></div>
   </header>
   <div class="notice" id="fileNotice" hidden>单词本需要本地服务读取 vocab.md，请运行
     <code>python3 scripts/fetch_news.py --serve</code>，然后访问 <code>http://localhost:8765/vocab.html</code></div>

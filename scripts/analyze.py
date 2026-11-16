@@ -171,3 +171,116 @@ def analyze_text(text, tokenize_fn, ruby_fn, patterns, syllabus, learned_ids):
         raise ValueError(f"一次最多 {MAX_LEN} 个字，请分几次解析")
     return {"sentences": [analyze_sentence(s, tokenize_fn, ruby_fn, patterns, syllabus, learned_ids)
                           for s in split_sentences(text)]}
+
+
+ANALYZE_TEMPLATE = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>句子解析</title>
+<style>
+/*__BASE_CSS__*/
+.wrap { max-width: 820px; }
+.inbox { margin-top: 20px; display: grid; gap: 10px; }
+.inbox textarea { font-size: 18px; min-height: 84px; }
+.inbox .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.inbox .hint { color: var(--muted); font-size: 12px; }
+.recent { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.recent .chip { font-size: 12px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+section { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; margin-top: 18px; }
+section h2 { font-size: 15px; margin: 0 0 12px; color: var(--muted); font-weight: 600; }
+.sent { font-size: 22px; line-height: 2.2; font-weight: 600; word-break: break-word; }
+.chunks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chunk { border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; background: var(--chip); min-width: 72px; }
+.chunk .ja { font-size: 18px; font-weight: 600; }
+.chunk .role { font-size: 12px; color: var(--evt); margin-top: 2px; }
+.chunk .role.unknown { color: var(--muted); }
+.chunk .zh { font-size: 13px; color: var(--muted); }
+h3 { font-size: 13px; color: var(--muted); margin: 18px 0 6px; font-weight: 600; }
+.pat { padding: 8px 0; border-top: 1px dashed var(--line); } .pat:first-of-type { border-top: 0; }
+.pat .t { font-weight: 700; } .pat .b { color: var(--muted); font-size: 14px; }
+.tag { font-size: 11px; color: #8a6514; background: #f3ecd9; border-radius: 6px; padding: 0 6px; margin-left: 6px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+td { padding: 6px 4px; border-top: 1px dashed var(--line); vertical-align: middle; }
+td.w { font-size: 17px; font-weight: 700; white-space: nowrap; } td.k { color: var(--evt); }
+td .btn { padding: 3px 10px; font-size: 12px; }
+.err { color: var(--imm); margin-top: 8px; }
+@media (max-width: 560px) { td.p { display: none; } .sent { font-size: 19px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div><h1>句子解析</h1><div class="sub">输入一句日语，本机解析，不用 AI</div></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap"><a class="navlink" href="index.html">新闻</a>
+      <a class="navlink" href="lesson.html">今日一课</a><a class="navlink" href="vocab.html">单词本</a></div>
+  </header>
+  <div class="notice" id="fileNotice" hidden>句子解析需要本地服务，请运行
+    <code>python3 scripts/fetch_news.py --serve</code>，然后访问 <code>http://localhost:8765/analyze.html</code></div>
+  <div class="inbox">
+    <textarea id="text" lang="ja" placeholder="例：私は映画を見ることが好きです。" maxlength="200"></textarea>
+    <div class="row"><button class="btn primary" id="go">解析</button>
+      <span class="hint">回车解析，Shift+回车换行；一次最多 200 字，可以输入几句</span></div>
+    <div class="err" id="err"></div>
+    <div class="recent" id="recent"></div>
+  </div>
+  <div id="out"></div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const toast = msg => { const t = $("#toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 2200); };
+const post = (path, body) => fetch(path, { method: "POST", body: JSON.stringify(body) })
+  .then(r => r.json().then(j => r.ok ? j : Promise.reject(new Error(j.error || r.status))));
+const ruby = (pairs, text) => pairs && pairs.length
+  ? pairs.map(([t, r]) => r ? `<ruby>${esc(t)}<rt>${esc(r)}</rt></ruby>` : esc(t)).join("") : esc(text);
+const KEY = "analyze-recent";
+const loadRecent = () => { try { return JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) { return []; } };
+const saveRecent = t => { try { localStorage.setItem(KEY, JSON.stringify([t, ...loadRecent().filter(x => x !== t)].slice(0, 10))); } catch (e) {} };
+let words = [];
+
+function showRecent() {
+  $("#recent").innerHTML = loadRecent().map((t, i) => `<button class="chip" data-r="${i}" title="${esc(t)}">${esc(t)}</button>`).join("");
+  document.querySelectorAll("[data-r]").forEach(b => b.onclick = () => { $("#text").value = loadRecent()[+b.dataset.r]; go(); });
+}
+
+async function go() {
+  const text = $("#text").value.trim();
+  $("#err").textContent = "";
+  if (!text) { $("#err").textContent = "请输入一句日语"; return; }
+  let r;
+  try { r = await post("/api/analyze", { text }); }
+  catch (e) { $("#err").textContent = e.message; return; }
+  saveRecent(text); showRecent();
+  words = [];
+  $("#out").innerHTML = r.sentences.map(s => {
+    const base = words.length; words.push(...s.words.map(w => ({ ...w, sentence: s.text })));
+    return `<section><div class="sent" lang="ja">${ruby(s.ruby, s.text)}</div>
+      <h3>句子结构</h3><div class="chunks">${s.chunks.map(c => `<div class="chunk"><div class="ja" lang="ja">${esc(c.text)}</div>
+        <div class="role ${c.role}">${esc(c.role_zh)}</div>${c.zh ? `<div class="zh">${esc(c.zh)}</div>` : ""}</div>`).join("")}</div>
+      ${s.patterns.length ? `<h3>句型</h3>` + s.patterns.map(p => `<div class="pat"><div class="t">${esc(p.title)}${p.learned ? `<span class="tag">学过</span>` : ""}</div>
+        <div class="b">${esc(p.brief)} · 在「${p.hits.map(esc).join("、")}」</div></div>`).join("") : ""}
+      ${s.learned.length ? `<h3>你学过的语法点</h3>` + s.learned.map(p => `<div class="pat"><div class="t">${esc(p.title)}<span class="tag">学过</span></div>
+        <div class="b">在「${p.hits.map(esc).join("、")}」</div></div>`).join("") : ""}
+      ${s.words.length ? `<h3>单词</h3><table>${s.words.map((w, i) => `<tr><td class="w" lang="ja">${esc(w.word)}</td><td class="k">${esc(w.kana)}</td>
+        <td>${esc(w.zh)}</td><td class="p">${esc(w.pos)}</td><td>${w.jlpt ? `<span class="lvb ${esc(w.jlpt)}">${esc(w.jlpt)}</span>` : ""}</td>
+        <td><button class="btn" data-w="${base + i}">加入单词本</button></td></tr>`).join("")}</table>` : ""}</section>`;
+  }).join("");
+  document.querySelectorAll("[data-w]").forEach(b => b.onclick = async () => {
+    const w = words[+b.dataset.w];
+    try { await post("/api/vocab", { word: w.base, kana: w.kana, zh: w.zh === "（辞书里没有）" ? "" : w.zh, sentence: w.sentence });
+      b.disabled = true; b.textContent = "已加入"; } catch (e) { toast("加入失败：" + e.message); }
+  });
+}
+
+$("#go").onclick = go;
+$("#text").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); go(); } };
+if (!location.protocol.startsWith("http")) $("#fileNotice").hidden = false;
+showRecent();
+</script>
+</body>
+</html>
+"""

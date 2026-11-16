@@ -1,4 +1,4 @@
-import contextlib, io, json, socket, sys, tempfile, threading, time, unittest, urllib.request
+import contextlib, io, json, socket, sys, tempfile, threading, time, unittest, urllib.error, urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -74,6 +74,43 @@ class ServerTest(unittest.TestCase):
         out = err.getvalue()
         self.assertNotIn("Traceback", out)
         self.assertIn("连接已断开", out)
+
+
+    def analyze(self, text):
+        req = urllib.request.Request(self.base + "/api/analyze", data=json.dumps({"text": text}).encode(), method="POST")
+        try:
+            r = urllib.request.urlopen(req, timeout=10)
+            return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_analyze_endpoint(self):
+        code, out = self.analyze("私は映画を見ることが好きです。")
+        self.assertEqual(code, 200)
+        self.assertEqual(out["sentences"][0]["chunks"][0]["role"], "topic")
+
+    def test_analyze_rejects_empty_and_long(self):
+        for bad in ("", "あ" * 201):
+            code, out = self.analyze(bad)
+            self.assertEqual(code, 400)
+            self.assertIn("error", out)
+
+    def test_analyze_never_translates(self):
+        def boom(*a, **k):
+            raise AssertionError("解析不应联网翻译")
+        orig = fetch_news.translate, fetch_news._via_mymemory, fetch_news._via_claude_cli
+        fetch_news.translate = fetch_news._via_mymemory = fetch_news._via_claude_cli = boom
+        try:
+            code, out = self.analyze("ポンコツなガジェットを買いました。")
+        finally:
+            fetch_news.translate, fetch_news._via_mymemory, fetch_news._via_claude_cli = orig
+        self.assertEqual(code, 200)
+
+    def test_analyze_with_corrupt_progress(self):
+        (self.user / "progress.json").write_text("{")
+        code, out = self.analyze("映画を見ます。")
+        self.assertEqual(code, 200)
+        self.assertEqual(out["sentences"][0]["learned"], [])
 
 
 if __name__ == "__main__":

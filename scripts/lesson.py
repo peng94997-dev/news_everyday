@@ -425,7 +425,7 @@ details.ans summary { cursor: pointer; color: var(--evt); margin-top: 8px; }
 <div class="wrap">
   <header>
     <div><h1>今日一课</h1><div class="sub" id="sub">每天一个语法点，认真读完</div></div>
-    <div style="display:flex;gap:10px"><a class="navlink" href="index.html">新闻</a><a class="navlink" href="vocab.html">单词本</a></div>
+    <div style="display:flex;gap:10px"><a class="navlink" href="index.html">新闻</a><a class="navlink" href="analyze.html">句子解析</a><a class="navlink" href="vocab.html">单词本</a></div>
   </header>
   <div class="notice" id="fileNotice" hidden>今日一课需要本地服务，请运行
     <code>python3 scripts/fetch_news.py --serve</code>，然后访问 <code>http://localhost:8765/lesson.html</code></div>
