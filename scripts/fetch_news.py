@@ -35,6 +35,7 @@ from email.utils import parsedate_to_datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from analyze import ANALYZE_TEMPLATE, PATTERNS_PATH, analyze_text
 from lesson import (LESSON_TEMPLATE, PROGRESS_NAME, USER_DIR, generate_today, lesson_view, load_progress,
                     grammar_marks, load_syllabus, mark_done, migrate_user_data, next_review, parse_lesson_json,
                     review_point, save_progress)
@@ -366,7 +367,7 @@ def translate(titles, cache_path):
 
 
 # ---- 逐語解析（janome）---------------------------------------------------
-TOKENS_VERSION = 3  # 解析ロジックを変えたら上げる（既存データを再解析）
+TOKENS_VERSION = 4  # 解析ロジックを変えたら上げる（既存データを再解析）
 POS_ZH = {"名詞": "名词", "動詞": "动词", "形容詞": "形容词", "副詞": "副词", "連体詞": "连体词",
           "接続詞": "连词", "助詞": "助词", "助動詞": "助动词", "接頭詞": "前缀", "記号": "符号",
           "感動詞": "感叹词", "フィラー": "语气词"}
@@ -410,8 +411,15 @@ def _hira(kata):
     return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in kata)
 
 
-def tokenize(title):
-    """見出しを語に分けて [{s,r,b,p,k,m,lv,note}] を返す。m が None の語は後で機械翻訳する。"""
+# 形式名詞：辞書に中国語が無いので、意味と使い方をここで補う
+FORMAL_NOUN_ZH = {"こと": "事情（形式名词：动词＋こと＝“……这件事”）", "もの": "东西（形式名词：……的东西）",
+                  "の": "（形式名词：动词＋の＝“……这件事”）", "とき": "……的时候", "ところ": "地方；正要……的时候",
+                  "ため": "为了；因为", "つもり": "打算", "はず": "应该（推测）", "よう": "像……一样；为了……"}
+
+
+def tokenize(title, headline=True):
+    """見出しを語に分けて [{s,r,b,p,k,m,lv,note,j}] を返す。m が None の語は後で機械翻訳する。
+    headline=False（自分で入力した文）のときは、見出し特有の注記（文末のか・へ・サ変名詞）を付けない。"""
     try:
         raw = list(_tokenizer().tokenize(title))
     except ImportError:
@@ -443,7 +451,7 @@ def tokenize(title):
             e = d[prev["s"] + s]
             prev.update(s=prev["s"] + s, b=prev["s"] + s, r=e["kana"], m=e["zh"], lv=e["jlpt"], k="n")
             continue
-        tok = {"s": s, "p": POS_ZH.get(pos[0], pos[0])}
+        tok = {"s": s, "p": POS_ZH.get(pos[0], pos[0]), "j": ",".join(pos[:2])}
         if KANJI.search(s):
             tok["r"] = READING_FIX.get(s, reading)
         if base != s:
@@ -464,13 +472,15 @@ def tokenize(title):
             elif tok["k"] == "pn":
                 tok.update(p="专有名词·" + PROPER_ZH.get(pos[2], "名称"), m="")  # 固有名詞は機械翻訳しない（誤訳が多い）
             else:
-                tok["m"] = None
+                tok["m"] = FORMAL_NOUN_ZH.get(s) if pos[:2] == ["名詞", "非自立"] else None
+            if pos[:2] == ["名詞", "形容動詞語幹"]:
+                tok["p"] = "形容动词（な形容词）"  # k は n のまま（大綱の「い形容詞」に当たらないように）
         # 数字の後の「月」は「がつ」
         if s == "月" and prev and prev["k"] == "num":
             tok["r"] = "がつ"
         toks.append(tok)
     # 見出し特有の省略：文末（記号・空白の前）の サ変名詞／「へ」
-    for i, tok in enumerate(toks):
+    for i, tok in enumerate(toks if headline else []):
         nxt = next((t for t in toks[i + 1:] if t["k"] != "sym" or t["s"] not in ("」", "』")), None)
         at_end = nxt is None or nxt["k"] == "sym"
         if at_end and tok["k"] == "n" and tok["p"] == "名词" and tok.get("m") is not None and raw and \
@@ -603,6 +613,7 @@ def build(news_dir):
     out.write_text(TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS).replace("/*__DATA__*/null", data))
     (news_dir / "vocab.html").write_text(VOCAB_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
     (news_dir / "lesson.html").write_text(LESSON_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
+    (news_dir / "analyze.html").write_text(ANALYZE_TEMPLATE.replace("/*__BASE_CSS__*/", BASE_CSS))
     return out, len(days)
 
 
@@ -796,6 +807,7 @@ dialog .hint { font-size: 12px; color: var(--muted); min-height: 1em; margin-top
     <div style="display:flex;gap:10px;align-items:center">
       <button class="navlink" id="fetchBtn" type="button" style="cursor:pointer;font:inherit;font-weight:600">🔄 抓取最新新闻</button>
       <a class="navlink" href="lesson.html">今日一课 <span id="lstatus"></span></a>
+      <a class="navlink" href="analyze.html">句子解析</a>
       <a class="navlink" href="vocab.html">单词本 <span id="vcount"></span></a>
       <label class="sub">日期&nbsp;<select id="day"></select></label>
     </div>
@@ -1267,10 +1279,25 @@ def today_jst():
     return datetime.now(JST).date()
 
 
-def serve(news_dir, port):
+def make_server(news_dir, port):
+    """ローカルサーバーを作って返す（起動はしない）。"""
     vocab_path = VOCAB_PATH
     cache_path = news_dir / "translations_zh.json"
     job = {"running": False, "log": [], "started": None, "finished": None, "result": None, "error": None}
+    rebuilding = threading.Lock()
+
+    def rebuild_in_background():
+        """ページを裏で再生成する。講解の補完で数分かかることがあるので、リクエストを待たせない。"""
+        def run():
+            if not rebuilding.acquire(blocking=False):  # 再生成中なら重ねない
+                return
+            try:
+                build(news_dir)
+            except Exception as e:
+                print(f"{datetime.now(JST):%H:%M:%S} 页面重新生成失败：{type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            finally:
+                rebuilding.release()
+        threading.Thread(target=run, daemon=True).start()
 
     def run_job():
         def log(msg):
@@ -1306,8 +1333,12 @@ def serve(news_dir, port):
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):  # 返答前にページを閉じた・再読み込みした
+                print(f"{datetime.now(JST):%H:%M:%S} {self.path} 返回前浏览器连接已断开（页面被关闭或刷新）",
+                      file=sys.stderr, flush=True)
 
         def _body(self):
             n = int(self.headers.get("Content-Length") or 0)
@@ -1347,6 +1378,8 @@ def serve(news_dir, port):
                 return self._json({"error": "bad json"}, 400)
             if path.startswith(("/api/lesson/", "/api/grammar/")):
                 return self._lesson_post(path, data)
+            if path == "/api/analyze":
+                return self._analyze(data)
             word = str(data.get("word", "")).strip()
             if not word:
                 return self._json({"error": "word is required"}, 400)
@@ -1380,6 +1413,19 @@ def serve(news_dir, port):
                 vocab_save(vocab_path, words, ignored)
             return self._json({"ok": True, "count": len(words)})
 
+        def _analyze(self, data):
+            """句子解析：janome と規則だけ（AI・ネットワーク翻訳は使わない）。"""
+            try:
+                learned = set(load_progress(USER_DIR / PROGRESS_NAME)["grammar"])
+            except ValueError as e:  # 進度が壊れていても解析はできる
+                print(f"{datetime.now(JST):%H:%M:%S} 警告：读取学习进度失败，学过标记为空：{e}", file=sys.stderr, flush=True)
+                learned = set()
+            try:
+                return self._json(analyze_text(str(data.get("text", "")), lambda s: tokenize(s, headline=False),
+                                               furigana, load_syllabus(PATTERNS_PATH), load_syllabus(), learned))
+            except ValueError as e:
+                return self._json({"error": str(e)}, 400)
+
         def _lesson_post(self, path, data):
             prog_path, today = USER_DIR / PROGRESS_NAME, today_jst()
             try:
@@ -1397,17 +1443,20 @@ def serve(news_dir, port):
                         return self._json({"error": msgs[-1] if msgs else "没有生成课程"}, 500)
                     with _vocab_lock:
                         return self._json(lesson_view(news_dir, USER_DIR, None, today))
-                with _vocab_lock:
-                    prog = load_progress(prog_path)
-                    if path == "/api/lesson/done":
+                if path == "/api/lesson/done":
+                    with _vocab_lock:
+                        prog = load_progress(prog_path)
                         mark_done(prog, str(data.get("date", "")), today)
                         save_progress(prog_path, prog)
-                        build(news_dir)  # 「学过」標記をすぐ反映
-                        return self._json(lesson_view(news_dir, USER_DIR, data.get("date"), today))
-                    if path == "/api/grammar/review":
+                        view = lesson_view(news_dir, USER_DIR, data.get("date"), today)
+                    rebuild_in_background()  # 「学过」標記を反映（ロックの外で、待たせない）
+                    return self._json(view)
+                if path == "/api/grammar/review":
+                    with _vocab_lock:
+                        prog = load_progress(prog_path)
                         review_point(prog, str(data.get("id", "")), int(data.get("grade", 0)), today)
                         save_progress(prog_path, prog)
-                        return self._json({"ok": True})
+                    return self._json({"ok": True})
             except ValueError as e:  # 進度ファイル破損など
                 print(f"{datetime.now(JST):%H:%M:%S} {path} 出错：{e}", file=sys.stderr, flush=True)
                 return self._json({"error": str(e)}, 500)
@@ -1425,7 +1474,11 @@ def serve(news_dir, port):
                 vocab_save(vocab_path, words, ignored)
             return self._json({"ok": True, "count": len(words)})
 
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+
+
+def serve(news_dir, port):
+    httpd = make_server(news_dir, port)
     print(f"ローカルサーバー起動: http://localhost:{port}/  （単語帳: http://localhost:{port}/vocab.html、Ctrl+C で終了）")
     try:
         httpd.serve_forever()
@@ -1488,7 +1541,8 @@ b.hit { background: #f3d36b; color: #1d1d1b; border-radius: 2px; font-weight: in
       <h1>日语单词本</h1>
       <div class="sub">数据保存在 news/vocab.md ・ 按遗忘曲线安排复习 ・ 每次抓取新闻时自动加入其中的 N5、N4 单词</div>
     </div>
-    <a class="navlink" href="index.html">← 返回新闻</a>
+    <div style="display:flex;gap:10px;flex-wrap:wrap"><a class="navlink" href="index.html">← 返回新闻</a>
+      <a class="navlink" href="analyze.html">句子解析</a></div>
   </header>
   <div class="notice" id="fileNotice" hidden>单词本需要本地服务读取 vocab.md，请运行
     <code>python3 scripts/fetch_news.py --serve</code>，然后访问 <code>http://localhost:8765/vocab.html</code></div>
