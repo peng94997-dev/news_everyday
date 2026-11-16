@@ -366,7 +366,7 @@ def translate(titles, cache_path):
 
 
 # ---- 逐語解析（janome）---------------------------------------------------
-TOKENS_VERSION = 3  # 解析ロジックを変えたら上げる（既存データを再解析）
+TOKENS_VERSION = 4  # 解析ロジックを変えたら上げる（既存データを再解析）
 POS_ZH = {"名詞": "名词", "動詞": "动词", "形容詞": "形容词", "副詞": "副词", "連体詞": "连体词",
           "接続詞": "连词", "助詞": "助词", "助動詞": "助动词", "接頭詞": "前缀", "記号": "符号",
           "感動詞": "感叹词", "フィラー": "语气词"}
@@ -410,8 +410,15 @@ def _hira(kata):
     return "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in kata)
 
 
-def tokenize(title):
-    """見出しを語に分けて [{s,r,b,p,k,m,lv,note}] を返す。m が None の語は後で機械翻訳する。"""
+# 形式名詞：辞書に中国語が無いので、意味と使い方をここで補う
+FORMAL_NOUN_ZH = {"こと": "事情（形式名词：动词＋こと＝“……这件事”）", "もの": "东西（形式名词：……的东西）",
+                  "の": "（形式名词：动词＋の＝“……这件事”）", "とき": "……的时候", "ところ": "地方；正要……的时候",
+                  "ため": "为了；因为", "つもり": "打算", "はず": "应该（推测）", "よう": "像……一样；为了……"}
+
+
+def tokenize(title, headline=True):
+    """見出しを語に分けて [{s,r,b,p,k,m,lv,note,j}] を返す。m が None の語は後で機械翻訳する。
+    headline=False（自分で入力した文）のときは、見出し特有の注記（文末のか・へ・サ変名詞）を付けない。"""
     try:
         raw = list(_tokenizer().tokenize(title))
     except ImportError:
@@ -443,7 +450,7 @@ def tokenize(title):
             e = d[prev["s"] + s]
             prev.update(s=prev["s"] + s, b=prev["s"] + s, r=e["kana"], m=e["zh"], lv=e["jlpt"], k="n")
             continue
-        tok = {"s": s, "p": POS_ZH.get(pos[0], pos[0])}
+        tok = {"s": s, "p": POS_ZH.get(pos[0], pos[0]), "j": ",".join(pos[:2])}
         if KANJI.search(s):
             tok["r"] = READING_FIX.get(s, reading)
         if base != s:
@@ -464,13 +471,15 @@ def tokenize(title):
             elif tok["k"] == "pn":
                 tok.update(p="专有名词·" + PROPER_ZH.get(pos[2], "名称"), m="")  # 固有名詞は機械翻訳しない（誤訳が多い）
             else:
-                tok["m"] = None
+                tok["m"] = FORMAL_NOUN_ZH.get(s) if pos[:2] == ["名詞", "非自立"] else None
+            if pos[:2] == ["名詞", "形容動詞語幹"]:
+                tok["p"] = "形容动词（な形容词）"  # k は n のまま（大綱の「い形容詞」に当たらないように）
         # 数字の後の「月」は「がつ」
         if s == "月" and prev and prev["k"] == "num":
             tok["r"] = "がつ"
         toks.append(tok)
     # 見出し特有の省略：文末（記号・空白の前）の サ変名詞／「へ」
-    for i, tok in enumerate(toks):
+    for i, tok in enumerate(toks if headline else []):
         nxt = next((t for t in toks[i + 1:] if t["k"] != "sym" or t["s"] not in ("」", "』")), None)
         at_end = nxt is None or nxt["k"] == "sym"
         if at_end and tok["k"] == "n" and tok["p"] == "名词" and tok.get("m") is not None and raw and \
