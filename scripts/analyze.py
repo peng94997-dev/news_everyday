@@ -3,6 +3,14 @@
 fetch_news.py から呼ばれる。このモジュールは fetch_news を import しない（分詞・注音の関数は引数で受け取る）。
 """
 import re
+from pathlib import Path
+
+from lesson import match_point
+
+ROOT = Path(__file__).resolve().parent.parent
+PATTERNS_PATH = ROOT / "data" / "sentence_patterns.json"
+MAX_LEN = 200
+NO_ENTRY = "（辞书里没有）"
 
 ROLE_ZH = {
     "topic": "话题（说到……）", "subject": "主语（谁／什么）", "liked": "对象（喜欢、会、想要的是什么）",
@@ -10,8 +18,11 @@ ROLE_ZH = {
     "quote": "引用", "dir": "方向", "from": "起点（从……）", "until": "终点（到……）", "of": "修饰后面的名词（……的）",
     "also": "也", "modifier": "修饰后面的名词", "nominal": "动作 → 名词（“……这件事”）",
     "te": "……然后／……着（连接下一个动作）", "adverb": "修饰后面的动作或形容词", "time": "时间",
-    "reason": "原因", "contrast": "转折（但是）", "predicate": "谓语", "unknown": "未识别",
+    "reason": "原因", "contrast": "转折（但是）", "concession": "即使……也／……也可以", "predicate": "谓语",
+    "unknown": "未识别",
 }
+OPEN_BRACKETS = set("「『（(【")
+QUOTE_VERBS = {"思う", "言う", "考える", "書く", "聞く", "話す", "答える", "いう"}
 LIKE_WORDS = {"好き", "嫌い", "上手", "下手", "分かる", "わかる", "できる", "ほしい", "欲しい"}
 PARTICLE_ROLE = {"は": "topic", "を": "object", "に": "ni", "で": "de", "へ": "dir", "から": "from", "まで": "until",
                  "の": "of", "も": "also", "て": "te", "ので": "reason", "けど": "contrast", "けれど": "contrast",
@@ -33,6 +44,10 @@ def _is_adverb(t):
 
 def _starts_new(cur, t):
     """t から新しい意群を始めるか。"""
+    if t["s"] in OPEN_BRACKETS:
+        return True  # 開き括弧は次の意群の頭に
+    if all(x["s"] in OPEN_BRACKETS for x in cur):
+        return False
     if not _independent(t):
         return False  # 助詞・助動詞・記号・非自立動詞（〜ている の い）は前にくっつける
     last = cur[-1]
@@ -69,8 +84,13 @@ def _particle_role(pt, i, chunks):
         pred = chunks[-1]
         return "liked" if any((t.get("b") or t["s"]) in LIKE_WORDS for t in pred) else "subject"
     if s == "と":
-        prev = "".join(t["s"] for t in chunks[i - 1]) if i else ""
-        return "quote" if prev.endswith("」") or "".join(x["s"] for x in chunks[i]).startswith("「") else "with"
+        nxt = _core(chunks[i + 1]) if i + 1 < len(chunks) else []
+        quoted = "」" in "".join(x["s"] for x in chunks[i]) or (nxt and (nxt[0].get("b") or nxt[0]["s"]) in QUOTE_VERBS)
+        return "quote" if quoted else "with"
+    if s == "も":
+        core = _core(chunks[i])
+        if len(core) > 1 and core[-2]["s"] in ("て", "で") and core[-2].get("j") == "助詞,接続助詞":
+            return "concession"  # 〜ても（いい）
     if s == "から" and conj:
         return "reason"
     if s == "で" and conj:
@@ -106,3 +126,48 @@ def label_roles(chunks):
                 role = "unknown"
         roles.append(role)
     return roles
+
+
+def _words(tokens):
+    out, seen = [], set()
+    for t in tokens:
+        if not _independent(t):
+            continue
+        base = t.get("b") or t["s"]
+        if base in seen:
+            continue
+        seen.add(base)
+        out.append({"word": t["s"], "base": base, "kana": t.get("r", ""), "zh": t.get("m") or NO_ENTRY,
+                    "pos": t.get("p", ""), "jlpt": t.get("lv", "")})
+    return out
+
+
+def analyze_sentence(text, tokenize_fn, ruby_fn, patterns, syllabus, learned_ids):
+    tokens = tokenize_fn(text)
+    chunks = chunk_tokens(tokens)
+    roles = label_roles(chunks)
+    item = {"title": text, "tokens": tokens}
+    pats = []
+    for p in patterns:
+        hits = match_point(p, item)
+        if hits:
+            pats.append({"id": p["id"], "title": p["title"], "brief": p["brief"], "hits": hits,
+                         "learned": p.get("syllabus") in learned_ids})
+    learned = [{"id": p["id"], "title": p["title"], "hits": h} for p in syllabus
+               if p["id"] in learned_ids and p["level"] != "headline" and (h := match_point(p, item))]
+    return {"text": text, "ruby": ruby_fn(text),
+            "chunks": [{"text": "".join(t["s"] for t in c), "role": r, "role_zh": ROLE_ZH[r],
+                        "zh": "、".join(t["m"] for t in c if _independent(t) and t.get("m"))}
+                       for c, r in zip(chunks, roles)],
+            "patterns": pats, "learned": learned, "words": _words(tokens)}
+
+
+def analyze_text(text, tokenize_fn, ruby_fn, patterns, syllabus, learned_ids):
+    """入力全体を文ごとに解析する。空・長すぎる入力は ValueError。"""
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("请输入一句日语")
+    if len(text) > MAX_LEN:
+        raise ValueError(f"一次最多 {MAX_LEN} 个字，请分几次解析")
+    return {"sentences": [analyze_sentence(s, tokenize_fn, ruby_fn, patterns, syllabus, learned_ids)
+                          for s in split_sentences(text)]}
