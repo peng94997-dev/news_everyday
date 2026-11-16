@@ -76,13 +76,24 @@ def _core(chunk):
     return [t for t in chunk if t["k"] != "sym"]
 
 
+JP_CHAR = re.compile(r"[ぁ-んァ-ヶ一-鿿々]")
+
+
+def _likes_next(i, chunks):
+    """が の後ろ、好き などの述語までの間に別の動詞・形容詞や が／を が無いか（あれば が はそちらの主語）。"""
+    for c in chunks[i + 1:-1]:
+        core = _core(c)
+        if core and (core[-1]["k"] in ("v", "a", "ax") or core[-1]["s"] in ("が", "を")):
+            return False
+    return any((t.get("b") or t["s"]) in LIKE_WORDS for t in chunks[-1])
+
+
 def _particle_role(pt, i, chunks):
     s, conj = pt["s"], pt.get("j") == "助詞,接続助詞"
     if s == "が":
         if conj:
             return "contrast"
-        pred = chunks[-1]
-        return "liked" if any((t.get("b") or t["s"]) in LIKE_WORDS for t in pred) else "subject"
+        return "liked" if _likes_next(i, chunks) else "subject"
     if s == "と":
         nxt = _core(chunks[i + 1]) if i + 1 < len(chunks) else []
         quoted = "」" in "".join(x["s"] for x in chunks[i]) or (nxt and (nxt[0].get("b") or nxt[0]["s"]) in QUOTE_VERBS)
@@ -103,12 +114,12 @@ def label_roles(chunks):
     for i, c in enumerate(chunks):
         core = _core(c)
         nxt = _core(chunks[i + 1]) if i + 1 < len(chunks) else []
-        if not core:
-            role = "unknown"
-        elif i == len(chunks) - 1:
-            role = "predicate"
+        lt = core[-1] if core else None
+        if not core or not JP_CHAR.search("".join(t["s"] for t in core)):
+            role = "unknown"  # 日本語が無い（英語・数字だけ など）
+        elif i == len(chunks) - 1 and not (lt["k"] == "pt" and "終助詞" not in lt.get("j", "")):
+            role = "predicate"  # 最後の意群（終助詞 か・ね・よ で終わってもよい）
         else:
-            lt = core[-1]
             if lt["k"] == "pt":
                 role = _particle_role(lt, i, chunks)
             elif (lt["k"] == "v" or (lt["k"] == "ax" and lt["s"] == "た")) and nxt:

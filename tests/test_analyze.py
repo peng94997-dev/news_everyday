@@ -80,6 +80,36 @@ class ResultTest(unittest.TestCase):
         self.assertIn("you-da", ids("雨みたいだ。"))
         self.assertIn("temo", ids("雨が降っても行きます。"))
 
+    def test_no_false_positives_on_everyday_sentences(self):
+        ids = lambda t: {p["id"] for p in run(t)["sentences"][0]["patterns"]}
+        wrong = [("いいえ、ちがいます。", "ga-aru"), ("はい、そうです。", "sou-da"), ("これは私のです。", "node"),
+                 ("これは私のです。", "n-desu"), ("田中さんです。", "n-desu"), ("朝ごはんです。", "n-desu"),
+                 ("七時に起きます。", "toki"), ("ときどき映画を見ます。", "toki"), ("よく分かった。", "i-adj-past"),
+                 ("しかし、雨は降りません。", "shika-nai"), ("ゴミを捨てる。", "te-iru"),
+                 ("銀行ではたらいています。", "tara"), ("なんでも食べます。", "temo"), ("名前に注意する。", "mae-ni")]
+        for text, pid in wrong:
+            with self.subTest(text=text, pattern=pid):
+                self.assertNotIn(pid, ids(text))
+        right = [("時間があります。", "ga-aru"), ("おいしそうです。", "sou-da"), ("雨なので行きません。", "node"),
+                 ("行きたいんです。", "n-desu"), ("子どものとき、よく泳いだ。", "toki"), ("面白かった。", "i-adj-past"),
+                 ("一つしかない。", "shika-nai"), ("本を読んでいる。", "te-iru"), ("雨が降ったら行かない。", "tara"),
+                 ("寝る前に本を読む。", "mae-ni")]
+        for text, pid in right:
+            with self.subTest(text=text, pattern=pid):
+                self.assertIn(pid, ids(text))
+
+    def test_last_chunk_not_always_predicate(self):
+        roles = lambda t: [c["role"] for c in run(t)["sentences"][0]["chunks"]]
+        self.assertEqual(roles("私は"), ["topic"])
+        self.assertEqual(roles("日本へ"), ["dir"])
+        self.assertTrue(all(r == "unknown" for r in roles("Hello world 123")))
+        self.assertEqual(roles("行きますか？"), ["predicate"])
+        self.assertEqual(roles("いい天気ですね。")[-1], "predicate")
+
+    def test_liked_only_for_ga_next_to_like_word(self):
+        roles = [c["role"] for c in run("弟が作った料理が好きです。")["sentences"][0]["chunks"]]
+        self.assertEqual(roles, ["subject", "modifier", "liked", "predicate"])
+
     def test_analyze_text_shape(self):
         s = run(CASES[0][0])["sentences"][0]
         self.assertEqual(s["chunks"][1], {"text": "映画を", "role": "object", "role_zh": analyze.ROLE_ZH["object"],
